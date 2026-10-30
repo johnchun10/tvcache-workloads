@@ -1,0 +1,34 @@
+[project]
+name = "tvcache-workloads"
+version = "0.1.0"
+description = "Workload integrations (Bash / Terminal-Bench) for the TVCache stateful tool-value cache"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    # Not on PyPI: resolved from the sibling checkout (see [tool.uv.sources]).
+    # Tested against tvclient main @ 45d8c7d.
+    "tvclient",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv.sources]
+tvclient = { path = "../tvclient", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tvcache_workloads"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests/bash"]
+markers = [
+    "cache_integration: needs a running tvcache-rust server; the container manager is a test double",
+    "e2e: needs tvcache-rust, container-manager-public, and Docker (real Terminal-Bench containers)",
+]
+# Real-service tiers are opt-in; `pytest` alone runs only the mocked unit tests.
+addopts = "-m 'not cache_integration and not e2e'"

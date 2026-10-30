@@ -1,0 +1,56 @@
+{
+  "task": "hello-world",
+  "description": "Hand-written command sequences for the existing Terminal-Bench task 'hello-world' (create /app/hello.txt containing 'Hello, world!'). Not LLM-generated. Rollouts are ordered so that, with snapshots after every stateful command, they exercise: uncached run, identical cached run, divergent suffixes restored from the same snapshot, and a state-equivalent rewrite.",
+  "rollouts": [
+    {
+      "name": "solve",
+      "purpose": "Uncached run: every command executes; test should pass.",
+      "commands": [
+        "mkdir -p /app/work && cd /app/work",
+        "echo 'Hello, world!' > /app/hello.txt",
+        "cat /app/hello.txt"
+      ],
+      "expect_test_passed": true
+    },
+    {
+      "name": "solve-again",
+      "purpose": "Identical history: every step and the test result should be cache hits.",
+      "commands": [
+        "mkdir -p /app/work && cd /app/work",
+        "echo 'Hello, world!' > /app/hello.txt",
+        "cat /app/hello.txt"
+      ],
+      "expect_test_passed": true
+    },
+    {
+      "name": "wrong-content",
+      "purpose": "Shares step 0, then diverges: resumes from the step-0 snapshot; test should fail.",
+      "commands": [
+        "mkdir -p /app/work && cd /app/work",
+        "echo 'Hello, world?' > /app/hello.txt",
+        "cat /app/hello.txt"
+      ],
+      "expect_test_passed": false
+    },
+    {
+      "name": "inspect-prefix",
+      "purpose": "Restores the same step-0 snapshot a second time. 'pwd' checks that cwd survived the snapshot; 'ls /app' must not show hello.txt, which earlier rollouts wrote only after step 0 (snapshot not mutated).",
+      "commands": [
+        "mkdir -p /app/work && cd /app/work",
+        "pwd",
+        "ls /app"
+      ],
+      "expect_test_passed": false
+    },
+    {
+      "name": "equivalent-rewrite",
+      "purpose": "Reaches the same files as 'solve' via a differently written command. Exact-match caching misses step 1; this pair is a candidate for semantic merging and for environment comparison, which this repo does not decide.",
+      "commands": [
+        "mkdir -p /app/work && cd /app/work",
+        "printf 'Hello, world!\\n' > /app/hello.txt",
+        "cat /app/hello.txt"
+      ],
+      "expect_test_passed": true
+    }
+  ]
+}
