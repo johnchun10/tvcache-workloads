@@ -20,7 +20,7 @@ from collections import Counter
 from pathlib import Path
 
 from tvcache_workloads.bash import SandboxConfig, TerminalBenchSandbox, load_trace_file, run_rollout
-from tvcache_workloads.bash.cache_admin import release_task_snapshots
+from tvcache_workloads.cache_admin import release_task_snapshots
 from tvcache_workloads.bash.sandbox import NAMESPACE_SEPARATOR
 
 # Same model and settings as the embedding demo in tvcache-rust PR #1.

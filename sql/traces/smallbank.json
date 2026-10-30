@@ -1,0 +1,142 @@
+{
+  "task": "smallbank-send-payment",
+  "description": "A deterministic SmallBank-inspired trace set for TVCache. Each fresh rollout starts from the same three-account SQLite seed.",
+  "rollouts": [
+    {
+      "name": "first-transfer",
+      "purpose": "Populate the cache with a transfer sequence and its snapshots.",
+      "calls": [
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid WHERE a.custid = ?",
+          "params": [1]
+        },
+        {
+          "mode": "write",
+          "query": "UPDATE checking SET bal_cents = bal_cents + CASE custid WHEN ? THEN ? WHEN ? THEN ? END WHERE custid IN (?, ?) AND (SELECT bal_cents FROM checking WHERE custid = ?) >= ?",
+          "params": [1, -1000, 2, 1000, 1, 2, 1, 1000],
+          "expected_rowcount": 2
+        },
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid WHERE a.custid = ?",
+          "params": [1]
+        },
+        {
+          "mode": "write",
+          "query": "UPDATE checking SET bal_cents = bal_cents + CASE custid WHEN ? THEN ? WHEN ? THEN ? END WHERE custid IN (?, ?) AND (SELECT bal_cents FROM checking WHERE custid = ?) >= ?",
+          "params": [2, -500, 3, 500, 2, 3, 2, 500],
+          "expected_rowcount": 2
+        },
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid ORDER BY a.custid",
+          "params": []
+        }
+      ],
+      "expect_test_passed": true
+    },
+    {
+      "name": "exact-replay",
+      "purpose": "The identical call history should be served entirely from cache.",
+      "calls": [
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid WHERE a.custid = ?",
+          "params": [1]
+        },
+        {
+          "mode": "write",
+          "query": "UPDATE checking SET bal_cents = bal_cents + CASE custid WHEN ? THEN ? WHEN ? THEN ? END WHERE custid IN (?, ?) AND (SELECT bal_cents FROM checking WHERE custid = ?) >= ?",
+          "params": [1, -1000, 2, 1000, 1, 2, 1, 1000],
+          "expected_rowcount": 2
+        },
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid WHERE a.custid = ?",
+          "params": [1]
+        },
+        {
+          "mode": "write",
+          "query": "UPDATE checking SET bal_cents = bal_cents + CASE custid WHEN ? THEN ? WHEN ? THEN ? END WHERE custid IN (?, ?) AND (SELECT bal_cents FROM checking WHERE custid = ?) >= ?",
+          "params": [2, -500, 3, 500, 2, 3, 2, 500],
+          "expected_rowcount": 2
+        },
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid ORDER BY a.custid",
+          "params": []
+        }
+      ],
+      "expect_test_passed": true
+    },
+    {
+      "name": "equivalent-sql-spelling",
+      "purpose": "Alternate SQL syntax produces the same database state, but exact matching executes the changed statements.",
+      "calls": [
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid WHERE a.custid = ?",
+          "params": [1]
+        },
+        {
+          "mode": "write",
+          "query": "UPDATE checking SET bal_cents = bal_cents + CASE WHEN custid = ? THEN ? WHEN custid = ? THEN ? END WHERE (custid = ? OR custid = ?) AND (SELECT bal_cents FROM checking WHERE custid = ?) >= ?",
+          "params": [1, -1000, 2, 1000, 1, 2, 1, 1000],
+          "expected_rowcount": 2
+        },
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid WHERE a.custid = ?",
+          "params": [1]
+        },
+        {
+          "mode": "write",
+          "query": "UPDATE checking SET bal_cents = bal_cents + CASE WHEN custid = ? THEN ? WHEN custid = ? THEN ? END WHERE (custid = ? OR custid = ?) AND (SELECT bal_cents FROM checking WHERE custid = ?) >= ?",
+          "params": [2, -500, 3, 500, 2, 3, 2, 500],
+          "expected_rowcount": 2
+        },
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid ORDER BY a.custid",
+          "params": []
+        }
+      ],
+      "expect_test_passed": true
+    },
+    {
+      "name": "divergent-transfer",
+      "purpose": "Reuse the common first transfer, restore its snapshot, then send a different payment.",
+      "calls": [
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid WHERE a.custid = ?",
+          "params": [1]
+        },
+        {
+          "mode": "write",
+          "query": "UPDATE checking SET bal_cents = bal_cents + CASE custid WHEN ? THEN ? WHEN ? THEN ? END WHERE custid IN (?, ?) AND (SELECT bal_cents FROM checking WHERE custid = ?) >= ?",
+          "params": [1, -1000, 2, 1000, 1, 2, 1, 1000],
+          "expected_rowcount": 2
+        },
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid WHERE a.custid = ?",
+          "params": [1]
+        },
+        {
+          "mode": "write",
+          "query": "UPDATE checking SET bal_cents = bal_cents + CASE custid WHEN ? THEN ? WHEN ? THEN ? END WHERE custid IN (?, ?) AND (SELECT bal_cents FROM checking WHERE custid = ?) >= ?",
+          "params": [1, -700, 3, 700, 1, 3, 1, 700],
+          "expected_rowcount": 2
+        },
+        {
+          "mode": "read",
+          "query": "SELECT a.custid, a.name, c.bal_cents, s.bal_cents, c.bal_cents + s.bal_cents AS total_cents FROM accounts AS a JOIN checking AS c ON c.custid = a.custid JOIN savings AS s ON s.custid = a.custid ORDER BY a.custid",
+          "params": []
+        }
+      ],
+      "expect_test_passed": true
+    }
+  ]
+}
