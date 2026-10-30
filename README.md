@@ -4,10 +4,10 @@ Workload integrations for TVCache experiments. This repo is separate from
 `tvclient`, `tvcache-rust`, and `container-manager-public`. It depends on them
 and doesn't copy any of them.
 
-| Workload | Owner | Status |
+| Workload | Status |
 |---|---|---|
-| [Bash / Terminal-Bench](bash/README.md) | Johnny | Working end to end on `hello-world` with real containers |
-| SQL | Sameer | not in this repo yet |
+| [Bash / Terminal-Bench](bash/README.md) | Working end to end on `hello-world` with real containers |
+| SQL | TBD |
 
 ```text
 src/tvcache_workloads/bash/   Python package (BashToolCall, TerminalBenchSandbox, runner)
