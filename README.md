@@ -1,6 +1,6 @@
 # tvcache-workloads
 
-Workloads for TVCache experiments. Each one connects `tvclient` to a real environment.
+Workloads for TVCache experiments.
 
 | Workload | Status |
 |---|---|
