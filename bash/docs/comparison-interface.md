@@ -1,6 +1,6 @@
-# Environment comparison: boundary with Shawn's work
+# Environment comparison: integration boundary
 
-Shawn owns the correctness and sandbox-comparison work. This repo
+Environment comparison is a separate piece of work. This repo
 **does not implement or fake an equality check**. `TerminalBenchSandbox` has
 no `equals` method. If tvclient PR #3 lands, the base class default
 (`NotImplementedError`) applies until a real comparator exists.
@@ -39,7 +39,7 @@ The design notes that two equal states can still produce different command
 output, and that nodes keep each tool call's own output. Here the cache
 stores per-call observations, so merging nodes doesn't merge outputs.
 
-## Open questions to settle with Shawn (not decided here)
+## Open questions (not decided here)
 
 1. **Where comparison runs:** in Python, by collecting state through manager
    operations or `docker exec`/`docker diff`; or as a new manager endpoint
@@ -49,7 +49,7 @@ stores per-call observations, so merging nodes doesn't merge outputs.
 3. **Read-only access:** collecting state by typing commands into the
    agent's shell changes shell history and `$?`. Should comparison use
    `docker exec` outside the agent's tmux session instead?
-4. **Interface:** John's `Sandbox.equals(other)` is async and compares two
+4. **Interface:** tvclient PR #3's `Sandbox.equals(other)` is async and compares two
    *live* sandboxes. Snapshot handles refuse `execute`. Should the comparator
    restore a handle temporarily, or compare snapshot images directly?
 5. **Cost reporting:** comparison time should be measured with the same event

@@ -23,7 +23,7 @@ runner ──> tvclient ──TCP──> tvcache-rust          (cached results +
 | Runnable example | `bash/examples/run_trace.py` |
 
 Design notes: [snapshot handling](docs/snapshot-design.md) ·
-[comparison boundary (Shawn)](docs/comparison-interface.md) ·
+[environment comparison boundary](docs/comparison-interface.md) ·
 [verification record](docs/verification.md)
 
 ## Setup (once)
@@ -78,11 +78,11 @@ Omit `--snapshot-threshold` to use tvclient's adaptive policy.
 ### Embeddings (for the semantic cache)
 
 `--embed` (or `run_rollout(..., embed_tool_calls=True)`) stores an embedding
-of each executed command in the cache. It requires John's PRs, **tvclient #2
+of each executed command in the cache. It requires the embedding PRs, **tvclient #2
 together with tvcache-rust #1**: client and server must be upgraded together,
 because a mismatched pair breaks the connection or hangs. It also needs
 `uv pip install sentence-transformers "transformers<5"`. By default it uses the
-same model as John's demo (`jinaai/jina-embeddings-v2-base-code`); change it with
+same model as the tvcache-rust embedding demo (`jinaai/jina-embeddings-v2-base-code`); change it with
 `--embedding-model`. Without `--embed`, everything works on tvclient with or
 without the PRs.
 
@@ -155,5 +155,5 @@ access.
 - Snapshots are cold images by default (`parked` running copies as a fallback).
   Either way they keep files, cwd, and exported variables, but not processes or
   unexported shell state. See [snapshot-design.md](docs/snapshot-design.md).
-- Out of scope: SQL (Sameer), semantic-cache / graph contraction (John),
-  environment comparison (Shawn), JEV.
+- Out of scope: SQL, semantic-cache / graph contraction, environment
+  comparison, JEV.

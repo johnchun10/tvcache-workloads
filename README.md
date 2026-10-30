@@ -5,7 +5,7 @@ Workload integrations for TVCache experiments. This repo is separate from
 and doesn't copy any of them.
 
 | Workload | Status |
-|---|---|---|
+|---|---|
 | [Bash / Terminal-Bench](bash/README.md) | Working end to end on `hello-world` with real containers |
 | SQL | TBD |
 
