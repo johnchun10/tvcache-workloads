@@ -300,3 +300,12 @@ def test_use_cache_false_makes_the_session_run_without_the_cache(monkeypatch):
     assert CacheSettings.from_config({}).use_cache is True
     assert CacheSettings.from_config({"use_cache": False}).use_cache is False  # YAML bool wins over the env
     assert len(cached) == 1  # the no-cache sessions never built a TvcacheToolExecutor
+
+
+def test_dataset_skips_snapshot_task_dirs(tmp_path):
+    # The manager's snapshot/restore copies (<task>_<uuid4>) that a run cut
+    # off by its time limit leaves next to the real task directories.
+    for name in ("build-stp", "build-stp_1957b802-7a7d-4d71-83cb-8028fabe77f6", "my_task"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "task.yaml").write_text("instruction: Build it.\n")
+    assert [r["extra_info"]["task_id"] for r in task_rows(tmp_path)] == ["build-stp", "my_task"]

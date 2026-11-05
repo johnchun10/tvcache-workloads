@@ -9,6 +9,7 @@ ground truth: the reward comes from running the task's tests.
 """
 
 import argparse
+import re
 from pathlib import Path
 from typing import List
 
@@ -24,11 +25,18 @@ SYSTEM_PROMPT = (
 )
 
 
+# The container manager writes each snapshot and restore as a copy of the task
+# directory, `<task>_<uuid4>`, next to the real ones, and removes it only when
+# the snapshot is deleted. A run cut off by its time limit leaves them behind,
+# so they must never be read as tasks.
+SNAPSHOT_DIR = re.compile(r"_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
 def task_rows(tasks_dir: Path, exclude: frozenset = frozenset()) -> List[dict]:
     rows = []
     for task_yaml in sorted(Path(tasks_dir).glob("*/task.yaml")):
         task = task_yaml.parent.name
-        if task in exclude:
+        if task in exclude or SNAPSHOT_DIR.search(task):
             continue
         instruction = yaml.safe_load(task_yaml.read_text())["instruction"].strip()
         rows.append({

@@ -31,6 +31,27 @@ def _drop_lines(prefixes: Sequence[str]) -> Callable[[str], str]:
     return lambda text: pattern.sub("", text)
 
 
+def _sort_runs(prefix: str) -> Callable[[str], str]:
+    """Sorts each run of consecutive lines that start with prefix. pip prints
+    its "Requirement already satisfied" lines in an order that changes from
+    run to run; the set of lines (names and versions) still has to match."""
+
+    def sort(text: str) -> str:
+        out: List[str] = []
+        run: List[str] = []
+        for line in text.split("\n"):
+            if line.lstrip().startswith(prefix):
+                run.append(line)
+                continue
+            out.extend(sorted(run))
+            run = []
+            out.append(line)
+        out.extend(sorted(run))
+        return "\n".join(out)
+
+    return sort
+
+
 _MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
 _DAYS = "Mon|Tue|Wed|Thu|Fri|Sat|Sun"
 
@@ -55,6 +76,7 @@ DEFAULT_RULES: List[Rule] = [
     ("job_pid", _sub(r"(?<=\[\d\] )\d+\b", "<PID>")),
     ("pytest_header", _drop_lines(["platform ", "rootdir:", "plugins:", "cachedir:", "configfile:"])),
     ("pip_progress", _drop_lines(["Downloading ", "Using cached ", "━", "──"])),
+    ("pip_requirement_order", _sort_runs("Requirement already satisfied: ")),
     ("apt_progress", _drop_lines(["Get:", "Hit:", "Ign:", "Fetched "])),
     ("trailing_whitespace", _strip_trailing_whitespace),
 ]

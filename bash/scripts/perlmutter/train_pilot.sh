@@ -25,6 +25,7 @@ source "$HERE/env.sh"
 
 MODE="${MODE:-train}"                  # sample | train | prebuild (build the task images and exit)
 EPOCHS="${EPOCHS:-5}"
+TOTAL_STEPS="${TOTAL_STEPS:-}"         # stop early after this many steps (empty = all epochs)
 N_GPUS="${N_GPUS:-1}"
 ROLLOUTS="${ROLLOUTS:-4}"              # GRPO group size (the paper: 8)
 BATCH="${BATCH:-4}"                    # tasks per step (the paper's 4)
@@ -208,6 +209,11 @@ if [[ "$MODE" == sample ]]; then
          actor_rollout_ref.rollout.val_kwargs.temperature=1.0)
 else
   EXTRA=(trainer.total_epochs="$EPOCHS" trainer.val_before_train=False trainer.test_freq=-1)
+  # Stop after this many steps in total (veRL checkpoints on the last step), to
+  # split a run over several allocations. Each part needs its own RUN, since
+  # dumps, checks and logs restart at 000; copy the previous part's
+  # checkpoints/ into the new RUN first and resume_mode=auto picks them up.
+  if [[ -n "$TOTAL_STEPS" ]]; then EXTRA+=(trainer.total_training_steps="$TOTAL_STEPS"); fi
 fi
 set +e
 "$VERL_PY" -m verl.trainer.main_ppo "${COMMON[@]}" "${EXTRA[@]}" 2>&1 | tee "$RUN/logs/verl.log"
@@ -240,16 +246,23 @@ kill -TERM "$SIDECAR"; wait "$SIDECAR" || true
 DUMPS=("$RUN"/dumps/dump_*.json)
 FINAL="${DUMPS[${#DUMPS[@]}-1]}"
 if [[ "$VERIFY" == 1 ]]; then
+  # The final dump goes first: it is the only check that needs the snapshots,
+  # which vanish with the node, and each replay takes ~9 s, so the 49-task
+  # dump at CHECK_NODES=20 alone takes hours. Earlier dumps follow, newest
+  # first, with whatever time the allocation has left (they can be rerun on
+  # a login node afterwards); report.md is rewritten after each one.
   mkdir -p "$RUN/check"
-  for dump in "${DUMPS[@]}"; do
+  FINAL_CHECK_NODES="${FINAL_CHECK_NODES:-8}"
+  for (( i=${#DUMPS[@]}-1; i>=0; i-- )); do
+    dump="${DUMPS[$i]}"
     name="$(basename "$dump" .json)"
-    snapshots_flag=""; [[ "$dump" != "$FINAL" ]] && snapshots_flag="--no-snapshots"
-    # shellcheck disable=SC2086
+    flags=(--max-replay-nodes "$FINAL_CHECK_NODES")
+    [[ "$dump" != "$FINAL" ]] && flags=(--max-replay-nodes "$CHECK_NODES" --no-snapshots)
     (cd "$WORKLOADS" && "$VERL_PY" -m tvverify check-graph --adapter tvcache_workloads.bash.verify:TerminalBenchAdapter \
-       --dump "$dump" --max-replay-nodes "$CHECK_NODES" $snapshots_flag --json "$RUN/check/$name.json") \
+       --dump "$dump" "${flags[@]}" --json "$RUN/check/$name.json") \
        > "$RUN/check/$name.log" 2>&1 || true
+    "$VERL_PY" -m tvverify report "$RUN"/check/*.json > "$RUN/report.md" 2>/dev/null || true
   done
-  "$VERL_PY" -m tvverify report "$RUN"/check/*.json > "$RUN/report.md" || true
   echo "report: $RUN/report.md" | tee -a "$RUN/logs/run.txt"
 else
   echo "tvverify: skipped (VERIFY=0)" | tee -a "$RUN/logs/run.txt"
