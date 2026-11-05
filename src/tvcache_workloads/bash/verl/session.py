@@ -25,6 +25,7 @@ from tvcache_workloads.bash.sandbox import (
     TerminalBenchSandbox,
 )
 from tvcache_workloads.bash.tool_call import BashToolCall
+from tvcache_workloads.bash.verl.direct import DirectExecutor
 
 SESSION_KEY = "tvcache_rollout"  # extra_fields key holding the session id
 FAILED_PREFIX = "Failed to execute"
@@ -48,6 +49,9 @@ class CacheSettings:
     # Seconds of un-snapshotted runtime before a snapshot. None keeps tvclient's
     # adaptive policy (a multiple of the measured fork cost).
     snapshot_threshold: Optional[float] = None
+    # False runs every command straight in the sandbox with no cache server
+    # (DirectExecutor): the baseline for with/without TVCache comparisons.
+    use_cache: bool = True
 
     @staticmethod
     def from_config(config: dict) -> "CacheSettings":
@@ -67,11 +71,16 @@ class CacheSettings:
             "trace_dir": get("trace_dir", "TVCACHE_TRACE_DIR"),
             "max_output_chars": get("max_output_chars", "TVCACHE_MAX_OUTPUT_CHARS", int),
             "snapshot_threshold": get("snapshot_threshold", "TVCACHE_SNAPSHOT_THRESHOLD", float),
+            "use_cache": get("use_cache", "TVCACHE_USE_CACHE", _as_bool),
         }
         return CacheSettings(**{k: v for k, v in values.items() if v is not None})
 
     def cache_task_id(self, task: str) -> str:
         return f"{task}{NAMESPACE_SEPARATOR}{self.namespace}" if self.namespace else task
+
+
+def _as_bool(value) -> bool:
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
 
 
 _recorder = None
@@ -95,7 +104,7 @@ def _trace_recorder(trace_dir: str):
 @dataclass
 class RolloutSession:
     task: str
-    executor: TvcacheToolExecutor
+    executor: object  # TvcacheToolExecutor, or DirectExecutor without the cache
     history: List[BashToolCall] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     failed_calls: int = 0
@@ -133,6 +142,8 @@ def make_session(task: str, settings: CacheSettings) -> RolloutSession:
             snapshot_mode=settings.snapshot_mode,
         )
     )
+    if not settings.use_cache:
+        return RolloutSession(task, DirectExecutor(sandbox, task))
     extra = {"observer": _trace_recorder(settings.trace_dir)} if settings.trace_dir else {}
     if settings.snapshot_threshold is not None:
         extra.update(adaptive=False, fixed_threshold_seconds=settings.snapshot_threshold)

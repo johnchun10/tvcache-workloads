@@ -202,3 +202,101 @@ def test_tool_rejects_bad_arguments_without_running_anything(stub_verl, monkeypa
     no_task = types.SimpleNamespace(tools_kwargs={}, extra_fields={})
     response, _, _ = asyncio.run(bash.execute("i", {"command": "ls"}, agent_data=no_task))
     assert "task_id" in response.text and executors == []
+
+
+# ---- no-cache baseline (DirectExecutor) ----------------------------------
+
+from tvclient import TestToolCall as SentinelTestCall  # noqa: E402  (renamed so pytest does not collect it)
+
+from tvcache_workloads.bash.verl.direct import DirectExecutor  # noqa: E402
+
+
+class FakeSandbox:
+    """Stands in for TerminalBenchSandbox: one shared log of starts, commands, tests, stops."""
+
+    log = []
+    flaky_failures_left = 1  # "flaky" raises once, then works
+
+    def __init__(self, task_name, env_id=None):
+        self.task_name, self.env_id = task_name, env_id
+
+    def get_id(self):
+        return self.env_id
+
+    async def start(self):
+        self.env_id = f"live-{sum(1 for e in FakeSandbox.log if e[0] == 'start')}"
+        FakeSandbox.log.append(("start", self.env_id))
+
+    async def execute(self, call):
+        if isinstance(call, SentinelTestCall):
+            FakeSandbox.log.append(("test", self.env_id))
+            return '{"passed": true}'
+        if call.command == "flaky" and FakeSandbox.flaky_failures_left > 0:
+            FakeSandbox.flaky_failures_left -= 1
+            raise TimeoutError("command timed out")
+        FakeSandbox.log.append(("run", self.env_id, call.command))
+        return f"ran {call.command}"
+
+    async def stop(self):
+        FakeSandbox.log.append(("stop", self.env_id))
+
+
+@pytest.fixture
+def fake_sandbox():
+    FakeSandbox.log, FakeSandbox.flaky_failures_left = [], 1
+    return FakeSandbox
+
+
+def test_direct_executor_runs_every_command_in_one_sandbox_and_tests_the_final_state(fake_sandbox):
+    session = RolloutSession("t", DirectExecutor(fake_sandbox, "t"))
+
+    async def go():
+        outputs = [await session.run("cd /app"), await session.run("ls")]
+        return outputs, await session.finish()
+
+    outputs, test_output = asyncio.run(go())
+    assert outputs == ["ran cd /app", "ran ls"] and json.loads(test_output) == {"passed": True}
+    assert fake_sandbox.log == [
+        ("start", "live-0"), ("run", "live-0", "cd /app"), ("run", "live-0", "ls"), ("test", "live-0"), ("stop", "live-0"),
+    ]
+    assert (session.executor.total_calls, session.executor.total_executions) == (3, 3)
+    assert session.executor.sandbox is None  # finish() stopped it
+
+
+def test_direct_executor_discards_the_sandbox_on_a_raised_call_and_replays_the_history(fake_sandbox):
+    session = RolloutSession("t", DirectExecutor(fake_sandbox, "t"))
+
+    async def go():
+        return [await session.run("cd /app"), await session.run("flaky"), await session.run("ls")]
+
+    outputs = asyncio.run(go())
+    assert outputs[0] == "ran cd /app" and outputs[1].startswith("Failed to execute") and outputs[2] == "ran ls"
+    assert session.failed_calls == 1
+    assert fake_sandbox.log == [
+        ("start", "live-0"), ("run", "live-0", "cd /app"), ("stop", "live-0"),  # flaky raised: sandbox discarded
+        ("start", "live-1"), ("run", "live-1", "cd /app"), ("run", "live-1", "flaky"), ("run", "live-1", "ls"),  # replayed
+    ]
+
+
+def test_direct_executor_tests_an_empty_trajectory_in_a_fresh_sandbox(fake_sandbox):
+    session = RolloutSession("t", DirectExecutor(fake_sandbox, "t"))
+    assert json.loads(asyncio.run(session.finish())) == {"passed": True}
+    assert fake_sandbox.log == [("start", "live-0"), ("test", "live-0"), ("stop", "live-0")]
+
+
+def test_use_cache_false_makes_the_session_run_without_the_cache(monkeypatch):
+    from tvcache_workloads.bash.verl import session as session_module
+
+    cached = []
+    monkeypatch.setattr(session_module, "TvcacheToolExecutor", lambda *a, **kw: cached.append(kw) or FakeExecutor())
+
+    assert CacheSettings().use_cache is True
+    assert isinstance(session_module.make_session("t", CacheSettings()).executor, FakeExecutor)  # default: the cache
+    assert isinstance(session_module.make_session("t", CacheSettings(use_cache=False)).executor, DirectExecutor)
+    for env in ("0", "false", "no"):
+        monkeypatch.setenv("TVCACHE_USE_CACHE", env)
+        assert CacheSettings.from_config({}).use_cache is False
+    monkeypatch.setenv("TVCACHE_USE_CACHE", "1")
+    assert CacheSettings.from_config({}).use_cache is True
+    assert CacheSettings.from_config({"use_cache": False}).use_cache is False  # YAML bool wins over the env
+    assert len(cached) == 1  # the no-cache sessions never built a TvcacheToolExecutor

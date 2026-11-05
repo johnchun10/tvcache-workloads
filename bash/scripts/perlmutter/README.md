@@ -68,6 +68,10 @@ tvclient and tvcache-rust, with a per-lookup trace (`$RUN/trace`).
 `TVCACHE_VARIANT=main` runs unmodified TVCache `main` (no trace: it has no
 observer hooks). Running both shows whether bugs B1–B3 hit during real
 training, and whether the fixes hold.
+`TVCACHE_VARIANT=nocache` runs the same training with no cache at all
+(`TVCACHE_USE_CACHE=0`; every command runs in the rollout's own container,
+no cache server, sidecar or tvverify): the baseline for a with/without
+TVCache comparison against `main` or `fixes`.
 
 ## What a run leaves in `$RUN`
 

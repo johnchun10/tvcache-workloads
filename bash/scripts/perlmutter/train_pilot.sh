@@ -5,6 +5,7 @@
 #   MODE=sample bash train_pilot.sh   # sampling test: 8 samples per task, no training (val_only)
 #   MODE=train  bash train_pilot.sh   # the pilot: 5 epochs of GRPO
 #   TVCACHE_VARIANT=main ...          # against TVCache main instead of the fix branches
+#   TVCACHE_VARIANT=nocache ...       # no cache at all: the with/without baseline
 #
 # Run it inside an allocation, e.g.
 #   sbatch -q shared -C gpu -G 2 -c 64 -t 08:00:00 -A <project> --wrap "MODE=train bash train_pilot.sh"
@@ -34,7 +35,7 @@ export TVCACHE_NAMESPACE="$(basename "$RUN")"   # a fresh trie per run
 export TVCACHE_SNAPSHOT_THRESHOLD="${SNAPSHOT_THRESHOLD-1.0}"
 # The trace needs tvclient's observer hooks, which only the fix branches have.
 if [[ "$TVCACHE_VARIANT" == fixes ]]; then export TVCACHE_TRACE_DIR="$RUN/trace"; else export TVCACHE_TRACE_DIR=""; fi
-echo "run: $RUN (variant $TVCACHE_VARIANT, mode $MODE, snapshot threshold ${TVCACHE_SNAPSHOT_THRESHOLD:-adaptive})" | tee "$RUN/logs/run.txt"
+echo "run: $RUN (variant $TVCACHE_VARIANT, mode $MODE, use_cache $TVCACHE_USE_CACHE, snapshot threshold ${TVCACHE_SNAPSHOT_THRESHOLD:-adaptive})" | tee "$RUN/logs/run.txt"
 
 PIDS=()
 cleanup() {
@@ -56,17 +57,23 @@ CGROUP_MEM="/sys/fs/cgroup$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup)/memor
  done) > "$RUN/logs/memory.csv" 2>/dev/null & PIDS+=($!)
 
 # 1. podman's Docker API socket, the cache server (default eviction:
-#    ttl_and_watermark, as in real training), the container manager
+#    ttl_and_watermark, as in real training), the container manager.
+#    The nocache variant starts no cache server and no sidecar.
 $CONTAINER_CLI system service --time=0 "unix://$PODMAN_SOCKET" > "$RUN/logs/podman.log" 2>&1 & PIDS+=($!)
-"$(variant_dir)/tvcache-rust/target/release/tvcache" --port="$TVCACHE_PORT" > "$RUN/logs/cache.log" 2>&1 & PIDS+=($!)
+if [[ "$TVCACHE_USE_CACHE" == 1 ]]; then
+  "$(variant_dir)/tvcache-rust/target/release/tvcache" --port="$TVCACHE_PORT" > "$RUN/logs/cache.log" 2>&1 & PIDS+=($!)
+fi
 MANAGER_REPO="$TVROOT/container-manager-public" bash "$WORKLOADS/bash/scripts/start_manager.sh" > "$RUN/logs/manager.log" 2>&1 & PIDS+=($!)
-wait_for_port "$TVCACHE_PORT" 60 "tvcache"
+[[ "$TVCACHE_USE_CACHE" == 1 ]] && wait_for_port "$TVCACHE_PORT" 60 "tvcache"
 wait_for_port "$FLASK_PORT" 600 "container manager"
 
 # 2. the sidecar: periodic DUMP_ALL, and the one snapshot drainer
-"$VERL_PY" "$HERE/cache_sidecar.py" --dump-dir "$RUN/dumps" --port "$TVCACHE_PORT" \
-  --manager-url "$TVCACHE_MANAGER_URL" --interval "${DUMP_INTERVAL:-600}" > "$RUN/logs/sidecar.log" 2>&1 &
-SIDECAR=$!
+SIDECAR=""
+if [[ "$TVCACHE_USE_CACHE" == 1 ]]; then
+  "$VERL_PY" "$HERE/cache_sidecar.py" --dump-dir "$RUN/dumps" --port "$TVCACHE_PORT" \
+    --manager-url "$TVCACHE_MANAGER_URL" --interval "${DUMP_INTERVAL:-600}" > "$RUN/logs/sidecar.log" 2>&1 &
+  SIDECAR=$!
+fi
 
 # 3. veRL
 # Tasks that cannot build on Perlmutter: fix-git clones a GitHub repo that is
@@ -114,6 +121,13 @@ set +e
 VERL_STATUS=${PIPESTATUS[0]}
 set -e
 echo "veRL exited $VERL_STATUS" | tee -a "$RUN/logs/run.txt"
+
+if [[ "$TVCACHE_USE_CACHE" != 1 ]]; then
+  # nocache: nothing to verify and no snapshots to release
+  echo "no cache: skipped tvverify and snapshot release" | tee -a "$RUN/logs/run.txt"
+  echo "containers left: $($CONTAINER_CLI ps -q 2>/dev/null | wc -l)" | tee -a "$RUN/logs/run.txt"
+  exit "$VERL_STATUS"
+fi
 
 # 4. final dump (the sidecar dumps once more on SIGTERM), then tvverify while
 #    the manager still holds the snapshots: C2a on the final trie, and
