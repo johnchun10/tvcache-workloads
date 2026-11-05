@@ -12,9 +12,15 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8"]
+# tvverify, the correctness framework (correctness/); see bash/verify.py.
+verify = ["tvverify"]
+# The veRL integration (src/tvcache_workloads/bash/verl). veRL itself is installed
+# separately on the training machine; this group covers the dataset builder and tests.
+verl = ["pyyaml>=6", "pandas>=2", "pyarrow>=15"]
 
 [tool.uv.sources]
 tvclient = { path = "../tvclient", editable = true }
+tvverify = { path = "correctness", editable = true }
 
 [build-system]
 requires = ["hatchling"]

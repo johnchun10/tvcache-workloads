@@ -1,0 +1,4 @@
+# veRL agent loops: actor_rollout_ref.rollout.agent.agent_loop_config_path=<this file>
+# and actor_rollout_ref.rollout.agent.default_agent_loop=tvcache_tool_agent
+- name: tvcache_tool_agent
+  _target_: tvcache_workloads.bash.verl.agent_loop.TvcacheToolAgentLoop

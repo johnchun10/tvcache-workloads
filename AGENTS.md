@@ -35,6 +35,8 @@ Changes to the manager go on our fork.
 - `manager_client.py`: async httpx client with per-endpoint timeouts and typed errors (`ManagerError`, `CommandTimeout`, `ManagerUnavailable`, `ManagerProtocolError`).
 - `observation.py`: wraps each command in BEGIN/END `printf` markers and extracts the output from the pane log.
 - `runner.py`: `run_rollout(...)` sends the cumulative history through the executor and records hits, executions, and timings. Supports `embed_tool_calls`, which needs tvclient PR #2.
+- `verify.py`: tvverify adapter (`HelloWorldAdapter`, rollouts from `bash/traces/`) and
+  `VerifiableSandbox`, whose `state_digest()` runs one read-only probe command in the container.
 - `cache_admin.py`: `release_task_snapshots` marks a task's snapshots for eviction, then drains them. The drain is global across the cache server.
 
 ## Invariants (don't break)
@@ -45,7 +47,8 @@ Changes to the manager go on our fork.
 - **Always pass the full command history** to `lookup_or_execute`.
 - **Snapshot state limits.** A snapshot keeps files, cwd, and exported variables (the manager needs `ENABLE_CACHING=1`). It loses processes, unexported variables, and volumes.
 - **Output format.** Output is terminal-rendered text: blank lines dropped, no exit code, wrapped at 160 columns.
-- **Environment equality is not implemented.** Don't add a placeholder `equals`.
+- **Environment equality lives in `verify.py`, not in `TerminalBenchSandbox`.** `VerifiableSandbox`
+  adds `state_digest()` for tvverify only. Don't add a placeholder `equals` to the production sandbox.
 
 ## Manager quirks to remember
 

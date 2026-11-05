@@ -9,7 +9,9 @@ import json
 
 import pytest
 from fake_manager import FakeManager
-from tvclient import TestToolCall as SentinelTestCall  # renamed so pytest does not collect it
+from tvclient import (
+    TestToolCall as SentinelTestCall,  # renamed so pytest does not collect it
+)
 
 from tvcache_workloads.bash import (
     COLD_PREFIX,

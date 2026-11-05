@@ -1,0 +1,16 @@
+[project]
+name = "tvverify"
+version = "0.1.0"
+description = "Correctness framework for TVCache: reference models, oracles and validators"
+requires-python = ">=3.10"
+dependencies = ["tvclient"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+plots = ["matplotlib"]
+
+[tool.setuptools.packages.find]
+include = ["tvverify*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,7 @@
+# veRL tool config: actor_rollout_ref.rollout.multi_turn.tool_config_path=<this file>
+# Settings left out here are read from TVCACHE_* environment variables
+# (see CacheSettings in session.py), so a job script sets them per run.
+tools:
+  - class_name: tvcache_workloads.bash.verl.tool.TvcacheBashTool
+    config:
+      type: native
