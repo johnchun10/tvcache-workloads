@@ -15,11 +15,13 @@ import csv
 import json
 import re
 import sys
+from datetime import datetime
 from collections import Counter
 from pathlib import Path
 from statistics import mean
 
 STEP_RE = re.compile(r"\bstep:(\d+) - (.*)$")
+TRAIN_START_RE = re.compile(r"INFO:(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+:Total training steps")
 REQUEST_RE = re.compile(r'"(?:POST|GET) /(\w+)')
 KEY_METRICS = {
     "timing_s/step": "step time (s)",
@@ -116,7 +118,99 @@ def summarize(run: Path, epochs: int) -> dict:
         summary["cache snapshots"] = stats.get("sandboxes", 0)
     summary["_per_epoch"] = per_epoch(steps, epochs)
     summary["_hit_rate_over_time"] = hit_rate_over_time(run, dumps)
+    summary["_hits_per_epoch"] = hits_per_epoch(run, steps, summary["_hit_rate_over_time"], epochs)
     return summary
+
+
+def training_start(run: Path) -> float:
+    """Unix time of step 1: veRL's 'Total training steps' line, else tasks.parquet."""
+    for line in (run / "logs" / "verl.log").read_text(errors="replace").splitlines():
+        match = TRAIN_START_RE.search(line)
+        if match:
+            return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
+    return (run / "tasks.parquet").stat().st_mtime
+
+
+def interpolate(points: list, x: float) -> float:
+    """Piecewise-linear value at x over [(x, y), ...]; 0 before the first point."""
+    if not points or x <= points[0][0]:
+        return 0.0 if not points or x < points[0][0] else points[0][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0) if x1 > x0 else y1
+    return points[-1][1]
+
+
+def hits_per_epoch(run: Path, steps: list, over_time: list, epochs: int) -> list:
+    """Hits and hit rate within each epoch, from the dumps nearest its end.
+
+    Epoch k ends at training start + the sum of timing_s/step through its last
+    step; counters at that moment are interpolated between the two dumps
+    around it (dumps are 10 min apart, an epoch is about 50 min)."""
+    if not over_time:
+        return []
+    t0 = training_start(run)
+    dump_t0 = (run / "tasks.parquet").stat().st_mtime if (run / "tasks.parquet").exists() else t0
+    hits_pts = [(dump_t0 + r["minutes"] * 60, r["hits"]) for r in over_time]
+    nodes_pts = [(dump_t0 + r["minutes"] * 60, r["nodes"]) for r in over_time]
+    per = max(1, len(steps) // epochs)
+    rows, elapsed, prev_hits, prev_nodes = [], 0.0, 0.0, 0.0
+    for e in range(epochs):
+        chunk = steps[e * per : (e + 1) * per] if e < epochs - 1 else steps[e * per :]
+        if not chunk:
+            break
+        elapsed += sum(s.get("timing_s/step", 0) for s in chunk)
+        hits = interpolate(hits_pts, t0 + elapsed)
+        nodes = interpolate(nodes_pts, t0 + elapsed)
+        d_hits, d_nodes = hits - prev_hits, nodes - prev_nodes
+        rows.append({
+            "epoch": e + 1,
+            "hits": round(d_hits),
+            "lookups": round(d_hits + d_nodes),
+            "hit rate": d_hits / (d_hits + d_nodes) if d_hits + d_nodes > 0 else 0.0,
+            "end (min)": elapsed / 60,
+        })
+        prev_hits, prev_nodes = hits, nodes
+    return rows
+
+
+def plot_hits_per_epoch(summaries: list, out_dir: Path) -> list:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    paths = []
+    for summary in summaries:
+        rows = summary["_hits_per_epoch"]
+        if not rows:
+            continue
+        suffix = "" if len(summaries) == 1 else "-" + summary["run"]
+        xs = [r["epoch"] for r in rows]
+        for key, ylabel, title, name in (
+            ("hit rate", "Hit rate (%)", "Cache Hit Rate per Epoch", "cache_hit_rate_per_epoch"),
+            ("hits", "Cache hits", "Cache Hits per Epoch", "cache_hits_per_epoch"),
+        ):
+            ys = [100 * r[key] if key == "hit rate" else r[key] for r in rows]
+            fig, ax = plt.subplots(figsize=(7, 4.2), dpi=150)
+            ax.plot(xs, ys, color=SERIES_COLORS["cache"], linewidth=2, marker="o", markersize=5)
+            for x, y in zip(xs, ys):
+                ax.annotate(f"{y:.1f}" if key == "hit rate" else f"{y:.0f}", (x, y), xytext=(0, 7),
+                            textcoords="offset points", ha="center", fontsize=9, color="#444444")
+            ax.set_title(f"{title} on {WORKLOAD_TITLE}", fontsize=13, pad=12)
+            ax.set_xlabel("Epoch")
+            ax.set_ylabel(ylabel)
+            ax.set_xticks(xs)
+            ax.set_ylim(0, max(ys) * 1.25 if max(ys) > 0 else 1)
+            ax.grid(True, color="#e5e5e5", linewidth=0.8)
+            for side in ("top", "right"):
+                ax.spines[side].set_visible(False)
+            fig.tight_layout()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / f"{name}{suffix}.png"
+            fig.savefig(path)
+            plt.close(fig)
+            paths.append(path)
+    return paths
 
 
 def hit_rate_over_time(run: Path, dumps: list) -> list:
@@ -289,6 +383,14 @@ def main() -> None:
             print("minutes  cumulative%  last-window%  hits  nodes")
             for r in rows:
                 print(f"{r['minutes']:7.1f}  {100 * r['cumulative']:10.1f}  {100 * r['window']:12.1f}  {r['hits']:4d}  {r['nodes']:5d}")
+    for summary in summaries:
+        rows = summary["_hits_per_epoch"]
+        if rows:
+            print()
+            print(f"== cache hits per epoch: {summary['run']} ==")
+            print("epoch  hits  lookups  hit-rate%  ends-at-min")
+            for r in rows:
+                print(f"{r['epoch']:5d}  {r['hits']:4d}  {r['lookups']:7d}  {100 * r['hit rate']:9.1f}  {r['end (min)']:11.1f}")
     print()
     for run in args.runs:
         print(f"per-step metrics: {run / 'steps.csv'}")
@@ -296,7 +398,7 @@ def main() -> None:
         try:
             print("chart:", plot_per_epoch(summaries, args.plot, "reward", "Mean Reward", "Mean Reward", "reward_per_epoch.png"))
             print("chart:", plot_per_epoch(summaries, args.plot, "step time (s)", "Mean Step Time (s)", "Mean Step Time", "step_time_per_epoch.png"))
-            for path in plot_hit_rate(summaries, args.plot):
+            for path in plot_hit_rate(summaries, args.plot) + plot_hits_per_epoch(summaries, args.plot):
                 print("chart:", path)
         except ImportError:
             print("charts skipped: matplotlib is not installed (pip install matplotlib)", file=sys.stderr)
