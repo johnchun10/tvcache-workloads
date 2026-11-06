@@ -5,7 +5,8 @@
 Reads logs/verl.log (per-step metrics), logs/manager.log (container requests)
 and, when present, dumps/dump_*.json (the cache tree with hit counters). Prints
 one summary table and a per-epoch reward table, and writes <run>/steps.csv
-with every metric veRL logged per step. Standard library only.
+with every metric veRL logged per step. Standard library only; --plot <dir>
+also writes reward_per_epoch.png and step_time_per_epoch.png (needs matplotlib).
 """
 
 import argparse
@@ -26,6 +27,10 @@ KEY_METRICS = {
     "response_length/mean": "response len",
 }
 EXTRA_KEYWORDS = ("passed", "tool_calls", "failed_calls")
+# Series colors, same as the SmallBank (SQL) chart: blue no-cache, red cache.
+# Validated with the dataviz palette checker (CVD dE 27.6, normal 31.8).
+SERIES_COLORS = {"nocache": "#4a86e8", "cache": "#cc4125"}
+WORKLOAD_TITLE = "Terminal-Bench Workload (Bash)"
 
 
 def parse_steps(verl_log: Path) -> list:
@@ -138,6 +143,44 @@ def write_csv(path: Path, steps: list) -> None:
         writer.writerows(steps)
 
 
+def series_label(run_name: str) -> str:
+    return "No-cache" if run_name.endswith("nocache") else "Cache"
+
+
+def plot_per_epoch(summaries: list, out_dir: Path, key: str, ylabel: str, title: str, filename: str) -> Path:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7, 4.2), dpi=150)
+    for summary in summaries:
+        label = series_label(summary["run"])
+        color = SERIES_COLORS["nocache" if label == "No-cache" else "cache"]
+        xs = [r["epoch"] for r in summary["_per_epoch"]]
+        ys = [r[key] for r in summary["_per_epoch"]]
+        ax.plot(xs, ys, color=color, linewidth=2, marker="o", markersize=5, label=label)
+        ax.annotate(label, (xs[-1], ys[-1]), xytext=(6, 0), textcoords="offset points",
+                    va="center", fontsize=9, color="#444444")
+    ax.set_title(f"{title} on {WORKLOAD_TITLE}", fontsize=13, pad=12)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel(ylabel)
+    ax.set_xticks(sorted({r["epoch"] for s in summaries for r in s["_per_epoch"]}))
+    if key == "reward":
+        ax.set_ylim(0, max(0.8, max(r[key] for s in summaries for r in s["_per_epoch"]) * 1.15))
+    else:
+        ax.set_ylim(bottom=0)
+    ax.grid(True, color="#e5e5e5", linewidth=0.8)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=2, frameon=False, fontsize=9)
+    fig.tight_layout()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / filename
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+
 def fmt(value) -> str:
     if isinstance(value, float):
         return f"{value:.3f}" if abs(value) < 100 else f"{value:.1f}"
@@ -159,6 +202,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("runs", nargs="+", type=Path, help="run directories")
     parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--plot", type=Path, metavar="DIR", help="write per-epoch charts (PNG) into DIR")
     args = parser.parse_args()
 
     summaries = [summarize(run, args.epochs) for run in args.runs]
@@ -181,6 +225,12 @@ def main() -> None:
     print()
     for run in args.runs:
         print(f"per-step metrics: {run / 'steps.csv'}")
+    if args.plot:
+        try:
+            print("chart:", plot_per_epoch(summaries, args.plot, "reward", "Mean Reward", "Mean Reward", "reward_per_epoch.png"))
+            print("chart:", plot_per_epoch(summaries, args.plot, "step time (s)", "Mean Step Time (s)", "Mean Step Time", "step_time_per_epoch.png"))
+        except ImportError:
+            print("charts skipped: matplotlib is not installed (pip install matplotlib)", file=sys.stderr)
 
 
 if __name__ == "__main__":
