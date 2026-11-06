@@ -6,7 +6,8 @@ Reads logs/verl.log (per-step metrics), logs/manager.log (container requests)
 and, when present, dumps/dump_*.json (the cache tree with hit counters). Prints
 one summary table and a per-epoch reward table, and writes <run>/steps.csv
 with every metric veRL logged per step. Standard library only; --plot <dir>
-also writes reward_per_epoch.png and step_time_per_epoch.png (needs matplotlib).
+also writes reward_per_epoch.png, step_time_per_epoch.png and, for runs with
+dumps, cache_hit_rate_over_time.png (needs matplotlib).
 """
 
 import argparse
@@ -114,7 +115,64 @@ def summarize(run: Path, epochs: int) -> dict:
         summary["cache hit rate"] = stats.get("hits", 0) / lookups if lookups else 0.0
         summary["cache snapshots"] = stats.get("sandboxes", 0)
     summary["_per_epoch"] = per_epoch(steps, epochs)
+    summary["_hit_rate_over_time"] = hit_rate_over_time(run, dumps)
     return summary
+
+
+def hit_rate_over_time(run: Path, dumps: list) -> list:
+    """Cumulative and per-window hit rate at each dump; minutes since the run started."""
+    if not dumps:
+        return []
+    marker = run / "tasks.parquet"  # written just before veRL starts
+    t0 = marker.stat().st_mtime if marker.exists() else dumps[0].stat().st_mtime
+    rows, prev_hits, prev_nodes = [], 0, 0
+    for dump in dumps:
+        stats = cache_stats(dump)
+        hits, nodes = stats.get("hits", 0), stats.get("nodes", 0)
+        lookups = hits + nodes
+        d_hits, d_nodes = hits - prev_hits, nodes - prev_nodes
+        rows.append({
+            "minutes": (dump.stat().st_mtime - t0) / 60,
+            "cumulative": hits / lookups if lookups else 0.0,
+            "window": d_hits / (d_hits + d_nodes) if d_hits + d_nodes > 0 else float("nan"),
+            "hits": hits,
+            "nodes": nodes,
+        })
+        prev_hits, prev_nodes = hits, nodes
+    return rows
+
+
+def plot_hit_rate(summaries: list, out_dir: Path) -> list:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    paths = []
+    for summary in summaries:
+        rows = summary["_hit_rate_over_time"]
+        if not rows:
+            continue
+        fig, ax = plt.subplots(figsize=(7, 4.2), dpi=150)
+        xs = [r["minutes"] for r in rows]
+        ax.plot(xs, [100 * r["cumulative"] for r in rows], color=SERIES_COLORS["cache"],
+                linewidth=2, marker="o", markersize=5, label="Cumulative")
+        ax.plot(xs, [100 * r["window"] for r in rows], color=SERIES_COLORS["nocache"],
+                linewidth=2, linestyle="--", marker="o", markersize=5, label="Last 10 min")
+        ax.set_title(f"Cache Hit Rate on {WORKLOAD_TITLE}", fontsize=13, pad=12)
+        ax.set_xlabel("Minutes of training")
+        ax.set_ylabel("Hit rate (%)")
+        ax.set_ylim(0, 100)
+        ax.grid(True, color="#e5e5e5", linewidth=0.8)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=2, frameon=False, fontsize=9)
+        fig.tight_layout()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"cache_hit_rate_over_time{'' if len(summaries) == 1 else '-' + summary['run']}.png"
+        fig.savefig(path)
+        plt.close(fig)
+        paths.append(path)
+    return paths
 
 
 def per_epoch(steps: list, epochs: int) -> list:
@@ -223,12 +281,23 @@ def main() -> None:
                 cells.append("".rjust(36))
         print(str(i + 1).ljust(6) + "".join(cells))
     print()
+    for summary in summaries:
+        rows = summary["_hit_rate_over_time"]
+        if rows:
+            print()
+            print(f"== cache hit rate over time: {summary['run']} ==")
+            print("minutes  cumulative%  last-window%  hits  nodes")
+            for r in rows:
+                print(f"{r['minutes']:7.1f}  {100 * r['cumulative']:10.1f}  {100 * r['window']:12.1f}  {r['hits']:4d}  {r['nodes']:5d}")
+    print()
     for run in args.runs:
         print(f"per-step metrics: {run / 'steps.csv'}")
     if args.plot:
         try:
             print("chart:", plot_per_epoch(summaries, args.plot, "reward", "Mean Reward", "Mean Reward", "reward_per_epoch.png"))
             print("chart:", plot_per_epoch(summaries, args.plot, "step time (s)", "Mean Step Time (s)", "Mean Step Time", "step_time_per_epoch.png"))
+            for path in plot_hit_rate(summaries, args.plot):
+                print("chart:", path)
         except ImportError:
             print("charts skipped: matplotlib is not installed (pip install matplotlib)", file=sys.stderr)
 
