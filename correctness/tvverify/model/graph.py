@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 
 from tvclient import TVCacheClient
 
+from tvverify.model.dump import plain_dump
+
 SCHEMA = "tcg-export/v2"
 
 
@@ -30,6 +32,10 @@ class GNode:
     hits: int = 0
     lpm_hits: int = 0
     path: List[str] = field(default_factory=list)  # the calls from the root to this node
+    # On a server with graph contraction, a node can hold several calls. The
+    # others appear as childless aliases of the first: this is its node id.
+    # An alias has its own value and shares the node's snapshot (model/dump.py).
+    alias_of: Optional[str] = None
 
 
 @dataclass
@@ -60,7 +66,7 @@ class GraphExport:
 def from_dumpall(dump: dict, adapter=None, root_image_id: str = "") -> Dict[str, GraphExport]:
     """Builds one GraphExport per task from a DumpAll result."""
     exports: Dict[str, GraphExport] = {}
-    for task_id, tcg in dump.items():
+    for task_id, tcg in plain_dump(dump).items():
         nodes: Dict[str, GNode] = {}
         edges: Dict[str, Dict[str, str]] = {}
         root_id = "root"
@@ -81,6 +87,7 @@ def from_dumpall(dump: dict, adapter=None, root_image_id: str = "") -> Dict[str,
                     hits=child["number_of_cache_hits"],
                     lpm_hits=child["number_of_lpm_hits"],
                     path=child_path,
+                    alias_of=path_id(path + [child["alias_of"]]) if child.get("alias_of") else None,
                 )
                 edges.setdefault(node_id, {})[label] = child_id
                 visit(child, child_id, child_path)

@@ -15,7 +15,8 @@ def _f(code: str, detail: str, node_id: Optional[str] = None) -> Finding:
 
 
 def recount(g: GraphExport) -> Dict[str, int]:
-    non_root = [n for i, n in g.nodes.items() if i != g.root_id]
+    # Aliases are further calls of a merged node, not nodes of their own.
+    non_root = [n for i, n in g.nodes.items() if i != g.root_id and n.alias_of is None]
     return {
         "number_of_nodes": len(non_root),
         "number_of_sandboxes": sum(1 for n in non_root if n.sandbox_id),
@@ -79,7 +80,7 @@ def check_structure(
     # sandbox ownership
     owners: Dict[str, List[str]] = {}
     for n, node in nodes.items():
-        if node.sandbox_id:
+        if node.sandbox_id and node.alias_of is None:  # an alias shares its node's snapshot
             owners.setdefault(node.sandbox_id, []).append(n)
     for sandbox_id, who in owners.items():
         if len(who) > 1:

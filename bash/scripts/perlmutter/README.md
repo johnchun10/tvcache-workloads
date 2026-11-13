@@ -1,83 +1,128 @@
-# Terminal-Bench pilot on NERSC Perlmutter
+# Terminal-Bench runs on NERSC Perlmutter
 
-GRPO training with veRL on the 51 easy Terminal-Bench tasks the TVCache paper
-used (`container-manager-public/tasks_easy_network_skip`), with every bash
-command going through TVCache, then `tvverify check-graph` on the cache it
-built. Pilot settings: Qwen2.5-1.5B-Instruct, 4 rollouts per task, batch
-4, 5 epochs (the paper: Qwen3-4B, 8 rollouts, 10 epochs).
+GRPO training with veRL on Terminal-Bench tasks, with every bash command going
+through TVCache, through TVCache with graph contraction, or through no cache at
+all, then `tvverify check-graph` on the cache the run built. Everything (cache
+server, container manager, containers, veRL) runs on one GPU node.
 
-Step-by-step instructions with every command, configuration and an FAQ are
-in `GUIDE.md`.
+`GUIDE.md` has the original step-by-step bring-up with an FAQ, and `ISSUES.md`
+what broke along the way. This file is the short reference.
 
 Perlmutter has no Docker daemon, so the container manager drives
 **podman-hpc** (`CONTAINER_CLI`, `COMPOSE_CMD`, `DOCKER_HOST`; see `env.sh`).
 
-## Order
+## Setting up
 
-| Step | Where | Command |
+All on a login node (free). `$TVROOT` is `$SCRATCH/tvcache` unless you set it.
+
+    git clone -b contraction-runs https://github.com/johnchun10/tvcache-workloads.git $SCRATCH/tvcache/tvcache-workloads
+    cd $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter
+    bash bootstrap.sh     # clones the other three repositories at the right branches
+    bash setup.sh         # builds the cache server, installs the Python side, downloads the models
+
+`bootstrap.sh` lays out:
+
+| Directory | Repository and branch |
+|---|---|
+| `tvcache-workloads/` | this one |
+| `container-manager-public/` | `main` (includes podman-hpc support) |
+| `variants/combined/tvclient/`, `variants/combined/tvcache-rust/` | `contraction-plus-fixes`: graph contraction plus the correctness fixes |
+
+Run both scripts again to pick up new commits. First time on a new account,
+also do the podman probe and the veRL environment from `GUIDE.md` (steps 2–4).
+
+## Running
+
+    bash run.sh <preset> [flags]
+
+| Preset | Tasks | Defaults |
 |---|---|---|
-| 0. Log in | Mac | `sshproxy -u <user>` (in a real terminal) |
-| 1. Stage the code | Mac | `REMOTE=<user>@perlmutter.nersc.gov bash stage.sh` |
-| 2. Probe podman (**gate**) | login node first (free), then a short shared CPU job | `bash probe_podman.sh`; if it passes, confirm under `salloc -q shared_interactive -C cpu -c 16 -t 00:20:00 -A <project>` |
-| 3. Build servers, install Python side | login node | `bash setup.sh` |
-| 4. Prebuild the 51 task images | login node (NERSC allows `podman-hpc build` there) | start the manager (as in `train_pilot.sh` step 1), then `$VERL_PY prebuild.py $TASKS_ROOT` |
-| 5. Smoke test | compute node | from `tvcache-workloads`: `$VERL_PY -m tvverify check --adapter tvcache_workloads.bash.verify:HelloWorldAdapter --rollouts 5`; must match the Mac run (contract 11/11, cache PASS, replay PASS) |
-| 6. Sampling test | GPU node | `MODE=sample bash train_pilot.sh` (about 20 min) |
-| 7. Pilot | GPU node | `MODE=train bash train_pilot.sh`, once per variant (below) |
+| `shakedown` | 1 easy + 1 medium | contraction at 0.9 with `minilm`; 2 epochs, 4 rollouts per task, 1 task per batch |
+| `main20-easy-med` | 10 easy + 10 medium | contraction at 0.9 with `minilm`; 5 epochs, 8 rollouts per task, 4 tasks per batch |
 
-Step 2 is the gate: if the **docker API socket** or **SDK** items fail, stop.
-The manager's Docker SDK calls and `docker-compose` both need that socket.
+| Flag | Meaning |
+|---|---|
+| `--cache none\|tvcache\|contraction` | no cache / TVCache / TVCache with graph contraction |
+| `--threshold X` | contraction: similarity threshold (the sweep: 0.8, 0.9, 0.95) |
+| `--embedder minilm\|jina-code` | contraction: `all-MiniLM-L6-v2` or `jina-embeddings-v2-base-code` |
+| `--budget N` | contraction: live sandboxes all contraction jobs share (32) |
+| `--epochs N`, `--rollouts N`, `--batch N` | epochs, rollouts per task, tasks per training step |
+| `--max-tokens N` | tokens per rollout after the prompt (2048) |
+| `--verify`, `--no-verify` | run tvverify on the cache afterwards, or skip it |
+| `--tasks "a b c"` | replace the preset's task list |
+| `--mode sample` | rollouts only, no training |
+| `--prebuild` | only build the task images through the manager, then exit |
+| `--dry-run` | print the resolved settings and exit |
 
-GPU jobs for steps 6–7 go in with `sbatch` on the `shared` QoS (it keeps
-running if SSH drops), from this directory:
+The order for a new set of tasks:
 
-    sbatch -q shared -C gpu -G 2 -c 64 -t 08:00:00 -A <project> \
-      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "MODE=train bash train_pilot.sh"
+    bash run.sh shakedown --prebuild        # login node: do the images build?
+    # then, in a GPU allocation:
+    sbatch -q shared -C gpu -G 2 -c 64 -t 02:00:00 -A <project> \
+      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "bash run.sh shakedown"
+
+and the same two commands with `main20-easy-med` (give it `-t 08:00:00`). The
+three-way comparison is three runs of the same preset:
+
+    bash run.sh main20-easy-med --cache none
+    bash run.sh main20-easy-med --cache tvcache
+    bash run.sh main20-easy-med --cache contraction --threshold 0.9 --embedder minilm
 
 Half a node (`-G 2 -c 64`) for its RAM, about 120 GB; veRL uses one GPU
 (`N_GPUS=1`). On GPU nodes podman's image store is `/tmp`, a RAM disk, and a
-quarter node (`-G 1 -c 32`, about 60 GB) ran out of memory (ISSUES.md #16).
-`$RUN/logs/memory.csv` logs the job's memory once a minute.
+quarter node ran out of memory (ISSUES.md #16).
 
-Snapshots: `train_pilot.sh` sets a fixed 1 s threshold
-(`SNAPSHOT_THRESHOLD`; empty for tvclient's adaptive policy), so misses
-often go through the restore path.
+## What contraction adds to a run
 
-## Budget
-
-The project has about 10 node-hours. Probe, prebuild and smoke test run on
-the login node (free). Sampling test: rollouts took about 43 min. One pilot
-variant: about 4.5–5 h on half a node, about 2.5 node-hours (more if the
-snapshot threshold slows rollouts), so about 5 for both. Checkpoints are
-saved every 10 steps; rerun with the same `RUN=` to resume (the cache
-restarts empty, so later steps begin cold). Check usage with
-`sshare -A <project>` or Iris.
-
-## veRL environment
-
-`VERL_PY` must be a Python with veRL 0.9.1 (the version the integration was
-written against), vLLM and torch. A prebuilt veRL container image, run through
-podman-hpc, is the least painful option; a conda env from NERSC's
-`pytorch` module plus `pip install verl[vllm]==0.9.1` also works. `setup.sh`
-then installs tvclient, tvcache-workloads and tvverify into it.
-
-## Variants
-
-`TVCACHE_VARIANT=fixes` (default) runs the `correctness-fixes` branches of
-tvclient and tvcache-rust, with a per-lookup trace (`$RUN/trace`).
-`TVCACHE_VARIANT=main` runs unmodified TVCache `main` (no trace: it has no
-observer hooks). Running both shows whether bugs B1–B3 hit during real
-training, and whether the fixes hold.
+1. **State check** (`state.json`, `logs/state_check.log`). Contraction merges
+   two cached commands when their sandboxes compare equal: same files under
+   `/app`, `/root`, `/etc` and `/tmp`, same exported variables, same current
+   directory, same installed packages. Before training, three sandboxes in the
+   same state are compared per task; paths that differ anyway are noise and
+   are skipped for that task. A task whose sandboxes cannot be made to compare
+   equal is trained on but never contracted.
+2. **Coordinator** (`logs/contraction.log`). Contraction may only work on a
+   task while none of its rollouts is running. Rollouts tell the coordinator
+   when they start and finish with a task; it contracts the tasks that are
+   free, sharing `--budget` sandboxes among them.
+3. **Embeddings.** Every executed command is embedded on the CPU and stored
+   with its cache entry; the server pairs similar commands for comparison.
 
 ## What a run leaves in `$RUN`
 
 | Path | What |
 |---|---|
-| `report.md` | tvverify's combined report: bugs, noise, inconclusive, per task |
-| `check/dump_*.json`, `.log` | check-graph results per dump (the last dump also checks snapshots, C2a) |
+| `logs/run.txt` | the settings, then the outcome: veRL's exit code, peak memory, contraction totals, leftover snapshots |
+| `config.env` | every setting the run used |
+| `tasks/`, `tasks.parquet` | the task directories and dataset the run used |
+| `logs/memory.csv` | once a minute: the job's memory, the image store's size, containers and images |
+| `logs/containers.csv` | once a minute: memory per running container (where podman reports it) |
+| `contraction/events.jsonl`, `summary.json` | every pause, resume, listing and merge with a timestamp; totals and counts over time |
+| `state.json` | per task: comparable or not, and the paths skipped as noise |
 | `dumps/dump_*.json` | DUMP_ALL every `DUMP_INTERVAL` s (default 600) and at the end |
-| `trace/` | TraceRecorder JSONL (fixes variant only) |
-| `logs/` | veRL, cache server, manager, podman, sidecar; `run.txt` has the summary and leftover snapshot count |
+| `report.md`, `check/` | tvverify's report and its per-dump results (the last dump also checks snapshots) |
+| `trace/` | per-lookup trace, when tvverify is on |
+| `logs/` | veRL, cache server, manager, podman, sidecar, contraction |
 
-Knobs: `MODE`, `EPOCHS`, `N_GPUS`, `ROLLOUTS`, `BATCH`, `CHECK_NODES`,
-`DUMP_INTERVAL`, `MODEL`, `TASKS_ROOT`, `TVCACHE_VARIANT`.
+Compare runs with
+
+    $VERL_PY compare_runs.py $TVROOT/runs/<a> $TVROOT/runs/<b> ... --plot charts/
+
+and read one task's cached commands, merged ones marked `=`, with
+`$VERL_PY dump_tree.py $TVROOT/runs/<a> hello-world`.
+
+## Other settings
+
+Everything `run.sh` does not cover still comes from the environment (see
+`env.sh` and the top of `train_pilot.sh`): `MODEL`, `N_GPUS`,
+`SNAPSHOT_THRESHOLD` (fixed 1 s; empty for tvclient's adaptive policy),
+`CHECK_NODES`, `DUMP_INTERVAL`, `MAX_TURNS`, `RUN` (reuse to resume from a
+checkpoint; the cache restarts empty), `TVCACHE_VARIANT` (`combined`, or
+`main` / `fixes` if you cloned those builds into `variants/`).
+
+## veRL environment
+
+`VERL_PY` must be a Python with veRL 0.9.1 (the version the integration was
+written against), vLLM and torch. A conda env from NERSC's `pytorch` module
+plus `pip install verl[vllm]==0.9.1` works. `setup.sh` then installs tvclient,
+tvcache-workloads, tvverify and sentence-transformers into it.

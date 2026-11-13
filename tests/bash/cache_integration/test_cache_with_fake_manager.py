@@ -23,7 +23,7 @@ from tvcache_workloads.bash import (
     load_trace_file,
     run_rollout,
 )
-from tvcache_workloads.bash.cache_admin import release_task_snapshots
+from tvcache_workloads.bash.cache_admin import node_children, release_task_snapshots
 
 pytestmark = pytest.mark.cache_integration
 
@@ -166,8 +166,9 @@ def test_embedding_switch_stores_one_vector_per_executed_command(
         async with TVCacheClient(*cache_server) as client:
             stack, found = [(await client.dump_all())[cache_task_id]["root"]], []
             while stack:
-                for key, child in stack.pop()["children"].items():
-                    found.append((key, child.get("embedding")))
+                for calls, child in node_children(stack.pop()):  # either dump shape
+                    for key, entry in calls.items():
+                        found.append((key, entry.get("embedding", child.get("embedding"))))
                     stack.append(child)
             return found
 
@@ -175,6 +176,6 @@ def test_embedding_switch_stores_one_vector_per_executed_command(
     commands = TRACE["solve"]["commands"]
     for command in commands:
         key = BashToolCall(command).serialize()
-        assert embeddings[key] == [float(len(key)), 1.0]
+        assert embeddings[key] == [float(len(command)), 1.0]  # the command text is embedded, not its key
     # The test result is stateless, so tvclient does not embed it.
     assert [v for k, v in embeddings.items() if "TESTING" in k] == [None]

@@ -1,12 +1,24 @@
 # Sourced by the Perlmutter scripts. Override any of these before sourcing.
 #
-# Layout under $TVROOT (staged by stage.sh from the Mac):
+# Layout under $TVROOT (cloned by bootstrap.sh):
 #   tvcache-workloads/  container-manager-public/
-#   variants/main/{tvclient,tvcache-rust}    TVCache main (unmodified)
-#   variants/fixes/{tvclient,tvcache-rust}   the correctness-fixes branches
+#   variants/combined/{tvclient,tvcache-rust}   contraction + correctness fixes
+# Optional older builds, if you clone them there yourself:
+#   variants/main/...   TVCache main (unmodified)
+#   variants/fixes/...  the correctness-fixes branches alone
+#
+# Two separate choices:
+#   CACHE            none | tvcache | contraction: what a run does
+#   TVCACHE_VARIANT  which build of tvclient + tvcache-rust it uses
+# CACHE=none starts no cache server (the with/without baseline); it still
+# needs a tvclient for its base classes. CACHE=contraction needs a build with
+# contraction (combined).
 export TVROOT="${TVROOT:-$SCRATCH/tvcache}"
 export PATH="$HOME/.local/bin:$HOME/bin:$PATH"           # uv, docker-compose (batch jobs too)
-export TVCACHE_VARIANT="${TVCACHE_VARIANT:-fixes}"       # main | fixes
+export CACHE="${CACHE:-tvcache}"
+export TVCACHE_VARIANT="${TVCACHE_VARIANT:-combined}"
+if [[ "$TVCACHE_VARIANT" == nocache ]]; then CACHE=none; TVCACHE_VARIANT=main; fi   # the old spelling
+if [[ "$CACHE" == none ]]; then export TVCACHE_USE_CACHE=0; else export TVCACHE_USE_CACHE=1; fi
 export TASKS_ROOT="${TASKS_ROOT:-$TVROOT/container-manager-public/tasks_easy_network_skip}"
 export MODEL="${MODEL:-$SCRATCH/hf/Qwen2.5-1.5B-Instruct}"
 export VERL_PY="${VERL_PY:-$TVROOT/verl-env/bin/python}"                      # a python with verl, vllm and tvcache-workloads installed
@@ -28,6 +40,8 @@ export TVCACHE_HOST="${TVCACHE_HOST:-127.0.0.1}"
 export TVCACHE_PORT="${TVCACHE_PORT:-7878}"              # TVCache main always uses 7878
 export FLASK_PORT="${FLASK_PORT:-9901}"
 export TVCACHE_MANAGER_URL="${TVCACHE_MANAGER_URL:-http://127.0.0.1:$FLASK_PORT}"
+
+export TVCACHE_CONTRACTION_PORT_DEFAULT=7879             # the contraction coordinator's control port
 
 variant_dir() { echo "$TVROOT/variants/$TVCACHE_VARIANT"; }
 # tvverify builds and starts its own debug server from here (it is not next to

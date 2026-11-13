@@ -1,5 +1,10 @@
 # Running the TVCache Terminal-Bench pilot on Perlmutter
 
+> **Newer than this guide:** the code now comes from git with `bootstrap.sh`
+> instead of `stage.sh`, and runs start with `run.sh <preset>` (see
+> `README.md`). The account setup, podman probe, veRL environment and FAQ
+> below still apply as written.
+
 A step-by-step guide, from a laptop with the repos checked out to a finished
 training run with a tvverify report. `README.md` in this directory is the
 short reference; `ISSUES.md` has the full history of what broke during
@@ -180,6 +185,14 @@ tvverify: 118/118 nodes replayed, 0 cache vs no-cache mismatches.
   tvverify report is the baseline: what goes wrong with no fixes applied.
 - `fixes` runs the `correctness-fixes` branches and also writes a
   per-lookup trace.
+- `nocache` runs the same training with **no cache at all**: every command
+  executes in the rollout's own container (`TVCACHE_USE_CACHE=0`,
+  `DirectExecutor` in `bash/verl/direct.py`). No cache server, sidecar,
+  dumps or tvverify. Pair it with `main` or `fixes` for a with/without
+  TVCache comparison:
+
+      sbatch -q shared -C gpu -G 2 -c 64 -t 08:00:00 -A <project> -J tv-train-nocache \
+        -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "TVCACHE_VARIANT=nocache MODE=train bash train_pilot.sh"
 
 Use **half a node** (`-G 2 -c 64`, about 120 GB RAM) even though veRL uses
 one GPU: a quarter node ran out of memory (FAQ). `sbatch` on the `shared`
@@ -220,7 +233,7 @@ command line (`EPOCHS=1 MODE=train bash train_pilot.sh`).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TVCACHE_VARIANT` | `fixes` | `main` (base cache) or `fixes` |
+| `TVCACHE_VARIANT` | `fixes` | `main` (base cache), `fixes`, or `nocache` (no cache: the baseline) |
 | `MODE` | `train` | `sample` (val only) or `train` |
 | `EPOCHS` / `ROLLOUTS` / `BATCH` | 5 / 4 / 4 | GRPO epochs, group size, tasks per step |
 | `N_GPUS` | 1 | GPUs veRL uses |
