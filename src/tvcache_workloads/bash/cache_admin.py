@@ -6,10 +6,27 @@ own eviction path (mark, then drain) so the server never points at a deleted
 snapshot.
 """
 
-from typing import List, Tuple, Type
+from typing import Dict, List, Tuple, Type
 
 from tvclient import SandboxEvictionRecord, SandboxManager, TVCacheClient
 from tvclient.sandbox import Sandbox
+
+
+def node_children(node: dict) -> List[Tuple[Dict[str, dict], dict]]:
+    """A dumped node's children, each as (its calls, the child node), where
+    calls maps a call's cache key to {"value": ..., "runtime": ...}.
+
+    Reads both dump shapes. A server without graph contraction has one call
+    per node (`children` is a dict keyed by it, value and runtime sit on the
+    node). With contraction a node can hold several merged calls (`children`
+    is a list, each child has a `tool_calls` dict)."""
+    children = node.get("children", {})
+    if isinstance(children, dict):
+        return [
+            ({call: {"value": child.get("value"), "runtime": child.get("runtime", 0)}}, child)
+            for call, child in children.items()
+        ]
+    return [(child.get("tool_calls", {}), child) for child in children]
 
 
 def snapshot_nodes(dump: dict, task_id: str) -> List[Tuple[List[str], str]]:
@@ -23,8 +40,9 @@ def snapshot_nodes(dump: dict, task_id: str) -> List[Tuple[List[str], str]]:
         path, node = stack.pop()
         if node.get("sandbox_id") is not None and path:
             found.append((path, node["sandbox_id"]))
-        for key, child in node.get("children", {}).items():
-            stack.append((path + [key], child))
+        for calls, child in node_children(node):
+            if calls:  # any of a merged node's calls names it
+                stack.append((path + [sorted(calls)[0]], child))
     return found
 
 

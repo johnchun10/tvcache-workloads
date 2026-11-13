@@ -25,6 +25,9 @@ The handle prefix, not the current mode, decides how a handle is restored or
 deleted, so a cache holding either kind is handled correctly. execute()
 refuses handles, and start() refuses to "restore" a plain live id.
 
+equals() and state_digest() compare two live sandboxes by hashing their state
+inside the container (state.py); graph contraction and tvverify use them.
+
 Both modes preserve the same state (see bash/docs/snapshot-design.md): each
 container's filesystem plus, with the manager's ENABLE_CACHING=1, cwd and
 *exported* variables. Processes, unexported variables, functions, aliases,
@@ -45,6 +48,14 @@ from tvcache_workloads.bash.manager_client import (
     ManagerTimeouts,
 )
 from tvcache_workloads.bash.observation import Markers, ObservationError, extract_output
+from tvcache_workloads.bash.state import (
+    ProbeError,
+    WatchPolicy,
+    digest_dict,
+    parse_probe,
+    probe_command,
+    strict_hashes,
+)
 from tvcache_workloads.bash.tool_call import BashToolCall
 
 COLD_PREFIX = "tb-snap:"
@@ -200,6 +211,27 @@ class TerminalBenchSandbox(Sandbox):
             return f"Failed to execute tests: {error}"
         self._emit("test", started, env_id=live_id, passed=passed)
         return json.dumps({"passed": passed}, sort_keys=True)
+
+    def watch_policy(self) -> WatchPolicy:
+        """Which state counts for this task (see state.py)."""
+        return WatchPolicy.for_task(tb_task_name(self.task_name))
+
+    async def state_digest(self, manifest: bool = True) -> Optional[dict]:
+        """Hashes this live sandbox's state with one read-only probe command.
+        manifest=False skips the per-entry listing, which only explains diffs."""
+        policy = self.watch_policy()
+        output = await self.execute(BashToolCall(probe_command(policy, manifest=manifest)))
+        if output.startswith("Failed to execute"):
+            raise ProbeError(output)
+        hashes, manifests = parse_probe(output, required=policy.strict)
+        return digest_dict(hashes, manifests, policy, root_image_id=tb_task_name(self.task_name))
+
+    async def equals(self, other: "Sandbox") -> bool:
+        """Whether this live sandbox and `other` (also live) hold the same
+        state. Graph contraction merges two cached commands when this is true."""
+        mine = strict_hashes(await self.state_digest(manifest=False))
+        theirs = strict_hashes(await other.state_digest(manifest=False))
+        return mine is not None and mine == theirs
 
     async def stop(self) -> None:
         if self.env_id is None:

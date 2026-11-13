@@ -1,6 +1,8 @@
 """BashToolCall: one shell command, and the unit of the TVCache key."""
 
-from tvclient import ToolCall
+from typing import List
+
+from tvclient import TestToolCall, ToolCall
 
 # tvclient sends each path entry as a u16-length string, so one serialized
 # call must fit in 65535 UTF-8 bytes.
@@ -39,8 +41,24 @@ class BashToolCall(ToolCall):
     def to_dict(self) -> dict:
         return {"tool": "bash", "command": self.command}
 
+    @classmethod
+    def from_dict(cls, data: dict) -> ToolCall:
+        """Rebuilds a call from a cache key (graph contraction replays cached
+        paths). A key holds only the command, so the call counts as
+        state-changing; the test sentinel comes back as itself."""
+        if data == TestToolCall().to_dict():
+            return TestToolCall()
+        return cls(data["command"])
+
     def will_mutate_state(self) -> bool:
         return self.mutates
+
+    def embed(self) -> List[float]:
+        """Embeds the command text alone, not its JSON key, so the shared
+        key structure does not make different commands look alike."""
+        from tvclient import get_embedder  # only in a tvclient with embeddings
+
+        return get_embedder().encode(self.command)
 
     def __repr__(self) -> str:
         suffix = "" if self.mutates else ", mutates=False"

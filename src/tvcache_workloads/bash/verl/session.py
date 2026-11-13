@@ -11,6 +11,7 @@ Nothing here imports veRL, so it can be tested without it.
 """
 
 import asyncio
+import logging
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -19,6 +20,8 @@ from typing import Callable, Dict, List, Optional
 
 from tvclient import TvcacheToolExecutor
 
+from tvcache_workloads.bash.contraction import ContractionGate
+from tvcache_workloads.bash.embedding import use_embedder
 from tvcache_workloads.bash.sandbox import (
     NAMESPACE_SEPARATOR,
     SandboxConfig,
@@ -52,6 +55,13 @@ class CacheSettings:
     # False runs every command straight in the sandbox with no cache server
     # (DirectExecutor): the baseline for with/without TVCache comparisons.
     use_cache: bool = True
+    # A model name or alias (embedding.py) makes tvclient embed every executed
+    # stateful command and store the vector with it; "" stores none. Needs a
+    # tvclient and server with embeddings, and is what contraction pairs by.
+    embedder: str = ""
+    # The contraction coordinator's control port (contraction.py); 0 = no
+    # contraction, so rollouts never wait for it.
+    contraction_port: int = 0
 
     @staticmethod
     def from_config(config: dict) -> "CacheSettings":
@@ -72,6 +82,8 @@ class CacheSettings:
             "max_output_chars": get("max_output_chars", "TVCACHE_MAX_OUTPUT_CHARS", int),
             "snapshot_threshold": get("snapshot_threshold", "TVCACHE_SNAPSHOT_THRESHOLD", float),
             "use_cache": get("use_cache", "TVCACHE_USE_CACHE", _as_bool),
+            "embedder": get("embedder", "TVCACHE_EMBEDDER"),
+            "contraction_port": get("contraction_port", "TVCACHE_CONTRACTION_PORT", int),
         }
         return CacheSettings(**{k: v for k, v in values.items() if v is not None})
 
@@ -108,12 +120,34 @@ class RolloutSession:
     history: List[BashToolCall] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     failed_calls: int = 0
+    # With contraction on: the coordinator's gate, and the cache task id this
+    # trajectory holds there from its first command until its tests are done.
+    gate: Optional[ContractionGate] = None
+    cache_task: str = ""
+    hold: Optional[str] = None
+    holding: bool = False
+
+    async def _pause_contraction(self) -> None:
+        """Before the first command: the task's contraction job must have
+        stopped, since it may only run while no rollout uses the task."""
+        if self.gate is not None and not self.holding:
+            self.hold = await self.gate.acquire(self.cache_task)
+            self.holding = True
+
+    async def _resume_contraction(self) -> None:
+        if self.gate is not None and self.holding and self.hold is not None:
+            try:
+                await self.gate.release(self.cache_task, self.hold)
+            except Exception as error:  # the hold expires on its own
+                logging.getLogger(__name__).warning("could not release %s: %s", self.cache_task, error)
+        self.holding = False
 
     async def run(self, command: str) -> str:
         """Runs one command after the trajectory's earlier ones, through the cache."""
         async with self.lock:
             self.history.append(BashToolCall(command))
             try:
+                await self._pause_contraction()
                 value = await self.executor.lookup_or_execute(list(self.history))
             except Exception as error:  # the executor already discarded the sandbox
                 value = f"{FAILED_PREFIX}: {type(error).__name__}: {error}"
@@ -131,7 +165,10 @@ class RolloutSession:
             except Exception as error:
                 return f"{FAILED_PREFIX}: {type(error).__name__}: {error}"
             finally:
-                await self.executor.close()
+                try:
+                    await self.executor.close()
+                finally:
+                    await self._resume_contraction()
 
 
 def make_session(task: str, settings: CacheSettings) -> RolloutSession:
@@ -147,6 +184,11 @@ def make_session(task: str, settings: CacheSettings) -> RolloutSession:
     extra = {"observer": _trace_recorder(settings.trace_dir)} if settings.trace_dir else {}
     if settings.snapshot_threshold is not None:
         extra.update(adaptive=False, fixed_threshold_seconds=settings.snapshot_threshold)
+    if settings.embedder:
+        # Passed only when on, so the default also works with a tvclient that
+        # predates embeddings.
+        use_embedder(settings.embedder)
+        extra["embed_tool_calls"] = True
     executor = TvcacheToolExecutor(
         sandbox, BashToolCall, settings.cache_task_id(task),
         host=settings.cache_host, port=settings.cache_port, **extra,
@@ -155,7 +197,8 @@ def make_session(task: str, settings: CacheSettings) -> RolloutSession:
     # across concurrent rollouts); set directly, since set_rollout_id() opens
     # a log file per rollout.
     executor.rollout_id = uuid.uuid4().hex
-    return RolloutSession(task, executor)
+    gate = ContractionGate(settings.cache_host, settings.contraction_port) if settings.contraction_port else None
+    return RolloutSession(task, executor, gate=gate, cache_task=settings.cache_task_id(task))
 
 
 class SessionRegistry:

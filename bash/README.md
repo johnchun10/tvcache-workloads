@@ -72,8 +72,9 @@ async with TvcacheToolExecutor(Sandbox, BashToolCall, "hello-world") as ex:
 - Very long output (over about 2000 lines) can't be captured. It's returned as `Failed to execute`, and that result is never cached.
 - Every command is assumed to change state unless created with `mutates=False`.
 - Snapshots keep files, the current directory, and exported variables. They don't keep running programs or unexported variables. See [snapshot design](docs/snapshot-design.md).
-- `TerminalBenchSandbox` itself has no `equals`. For correctness checks, `VerifiableSandbox`
-  in `verify.py` adds a state digest (files under `/app`, exported variables, cwd).
+- `TerminalBenchSandbox.equals()` compares two live sandboxes by a state digest hashed inside
+  the container: files under the watched roots, exported variables, cwd and, optionally,
+  installed packages (`state.py`). tvverify and graph contraction both use it.
 
 ## Correctness checks (tvverify)
 

@@ -9,9 +9,15 @@ stopping an unknown id, 504 for a command timeout, and multi-line commands
 joined with " && ".
 
 The "shell" is a toy interpreter for a handful of commands used in tests; the
-state is a dict of files plus a cwd.
+state is a dict of files plus a cwd. The state probe (bash/state.py) is not
+interpreted: any command that prints `tvv-h` records is answered from that
+state directly, honoring the probe's `-path` excludes and listing pages.
+`noise_paths` are files whose content differs in every terminal, the way a
+container runtime's own files do.
 """
 
+import fnmatch
+import hashlib
 import itertools
 import json
 import re
@@ -34,14 +40,17 @@ class Terminal:
     cwd: str = "/app"
     rows: List[str] = field(default_factory=list)
     inherited_log: str = ""
+    serial: int = 0  # differs per terminal; the content of the noise files
 
     def prompt(self) -> str:
         return f"root@terminal:{self.cwd}# "
 
 
 class FakeManager:
-    def __init__(self, tasks=("hello-world",), cold_snapshots=True):
+    def __init__(self, tasks=("hello-world",), cold_snapshots=True, noise_paths=()):
         self.tasks = set(tasks)
+        self.noise_paths = tuple(noise_paths)
+        self._serials = itertools.count(1)
         # False mimics the stock manager, which has no snapshot endpoints.
         self.cold_snapshots = cold_snapshots
         self.terminals: Dict[str, Terminal] = {}
@@ -193,7 +202,40 @@ class FakeManager:
     def _path(self, terminal: Terminal, name: str) -> str:
         return name if name.startswith("/") else f"{terminal.cwd.rstrip('/')}/{name}"
 
+    def _probe(self, terminal: Terminal, command: str) -> str:
+        """Answers state.probe_command / state.listing_command from the toy state."""
+        if not terminal.serial:
+            terminal.serial = next(self._serials)
+        patterns = [p.replace("\\", "") for p in re.findall(r"-path '([^']*)'", command)]
+
+        def skipped(path: str) -> bool:
+            return any(fnmatch.fnmatchcase(path, p) or path.startswith(p.rstrip("/") + "/") for p in patterns)
+
+        files = dict(terminal.files)
+        files.update({path: f"noise {terminal.serial}\n" for path in self.noise_paths})
+        lines = sorted(
+            f"tvv-m fs {hashlib.sha256(content.encode()).hexdigest()[:12]} {path}"
+            for path, content in files.items() if not skipped(path)
+        ) + sorted(f"tvv-m fs d755 {path}" for path in terminal.dirs if not skipped(path))
+        page = re.search(r"sed -n '(\d+),(\d+)p'; printf 'tvv-h page", command)
+        if page:
+            first, last = int(page.group(1)), int(page.group(2))
+            return "".join(line + "\n" for line in lines[first - 1 : last]) + f"tvv-h page {first}\n"
+
+        def digest(text: str) -> str:
+            return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+        out = [f"tvv-h cwd {digest(terminal.cwd)}", "tvv-h oldpwd 0000000000000000",
+               f"tvv-h env {digest('')}", f"tvv-h fs {digest(chr(10).join(lines))}"]
+        if "tvv-h pkg" in command:
+            out.append(f"tvv-h pkg {digest('packages')}")
+        if "tvv-m cwd" in command:
+            out += [f"tvv-m cwd {terminal.cwd}"] + lines
+        return "".join(line + "\n" for line in out)
+
     def _run(self, terminal: Terminal, command: str, timeout: float):
+        if "tvv-h" in command:
+            return self._probe(terminal, command), False
         out = []
         for part in re.split(r"\s*(?:&&|;)\s*", command):
             if not part:
