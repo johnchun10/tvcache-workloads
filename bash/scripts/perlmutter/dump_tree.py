@@ -4,7 +4,8 @@
     python dump_tree.py <run dir> hello-world  # that task's tool-call tree
 
 Each line is one cached command (indented by depth in the tree) with its hit
-count and the first line of its output. The tree only exists for runs that
+count and the first line of its output. Commands that graph contraction merged
+into one node are listed together, the later ones marked `=`. The tree only exists for runs that
 used the cache; the no-cache variant keeps no record of commands.
 """
 
@@ -12,6 +13,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
+
+from tvcache_workloads.bash.cache_admin import node_children
 
 
 def label(edge: str) -> str:
@@ -25,13 +28,14 @@ def label(edge: str) -> str:
 
 
 def show(node: dict, depth: int, width: int) -> None:
-    for edge, child in node.get("children", {}).items():
-        command = label(edge).replace("\n", "\\n")
-        value = str(child.get("value", "")).strip().splitlines()
-        first = value[0] if value else ""
+    for calls, child in node_children(node):
         hits = child.get("number_of_cache_hits", 0)
-        print(f"{'  ' * depth}$ {command[:width]}")
-        print(f"{'  ' * depth}    [hits {hits}] {first[:width]}")
+        for index, edge in enumerate(sorted(calls)):
+            command = label(edge).replace("\n", "\\n")
+            value = str(calls[edge].get("value") or "").strip().splitlines()
+            first = value[0] if value else ""
+            print(f"{'  ' * depth}{'=' if index else '$'} {command[:width]}")
+            print(f"{'  ' * depth}    [hits {hits}] {first[:width]}")
         show(child, depth + 1, width)
 
 

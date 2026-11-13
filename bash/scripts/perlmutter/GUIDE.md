@@ -1,5 +1,10 @@
 # Running the TVCache Terminal-Bench pilot on Perlmutter
 
+> **Newer than this guide:** the code now comes from git with `bootstrap.sh`
+> instead of `stage.sh`, and runs start with `run.sh <preset>` (see
+> `README.md`). The account setup, podman probe, veRL environment and FAQ
+> below still apply as written.
+
 A step-by-step guide, from a laptop with the repos checked out to a finished
 training run with a tvverify report. `README.md` in this directory is the
 short reference; `ISSUES.md` has the full history of what broke during

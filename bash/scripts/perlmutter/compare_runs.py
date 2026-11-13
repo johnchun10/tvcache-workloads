@@ -1,11 +1,11 @@
 """Compares pilot runs (with and without the cache) from their run directories.
 
-    python compare_runs.py $TVROOT/runs/<...>-train-nocache $TVROOT/runs/<...>-train-main
+    python compare_runs.py $TVROOT/runs/<...>-none $TVROOT/runs/<...>-tvcache $TVROOT/runs/<...>-contraction-t0.9-minilm
 
 Reads logs/verl.log (per-step metrics), logs/manager.log (container requests)
 and, when present, dumps/dump_*.json (the cache tree with hit counters). Prints
 one summary table and a per-epoch reward table, and writes <run>/steps.csv
-with every metric veRL logged per step. Standard library only; --plot <dir>
+with every metric veRL logged per step. Needs tvcache-workloads installed; --plot <dir>
 also writes reward_per_epoch.png, step_time_per_epoch.png and, for runs with
 dumps, cache_hit_rate_over_time.png (needs matplotlib).
 """
@@ -19,6 +19,8 @@ from datetime import datetime
 from collections import Counter
 from pathlib import Path
 from statistics import mean
+
+from tvcache_workloads.bash.cache_admin import node_children
 
 STEP_RE = re.compile(r"\bstep:(\d+) - (.*)$")
 TRAIN_START_RE = re.compile(r"INFO:(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+:Total training steps")
@@ -72,11 +74,12 @@ def cache_stats(dump_path: Path) -> dict:
     totals = Counter()
 
     def visit(node: dict) -> None:
-        for child in node.get("children", {}).values():
+        for calls, child in node_children(node):
             totals["nodes"] += 1
+            totals["calls"] += len(calls)  # more than one on a node that contraction merged
             totals["hits"] += child.get("number_of_cache_hits", 0)
             totals["lpm_hits"] += child.get("number_of_lpm_hits", 0)
-            totals["runtime_ms"] += child.get("runtime", 0)
+            totals["runtime_ms"] += sum(entry.get("runtime", 0) for entry in calls.values())
             visit(child)
 
     for tcg in dump.values():
@@ -113,9 +116,20 @@ def summarize(run: Path, epochs: int) -> dict:
         summary["cache nodes"] = stats.get("nodes", 0)
         summary["cache hits"] = stats.get("hits", 0)
         summary["cache lpm hits"] = stats.get("lpm_hits", 0)
-        lookups = stats.get("hits", 0) + stats.get("nodes", 0)  # every node was one miss
+        lookups = stats.get("hits", 0) + stats.get("calls", 0)  # every cached call was one miss
         summary["cache hit rate"] = stats.get("hits", 0) / lookups if lookups else 0.0
         summary["cache snapshots"] = stats.get("sandboxes", 0)
+        summary["calls merged away"] = stats.get("calls", 0) - stats.get("nodes", 0)
+    contraction = run / "contraction" / "summary.json"
+    if contraction.exists():
+        totals = json.loads(contraction.read_text())["totals"]
+        summary["similar pairs listed"] = totals["similar_pairs_listed"]
+        summary["contraction comparisons"] = totals["comparisons"]
+        summary["contraction merges"] = totals["merged_classes"]
+    peak = peak_memory(run / "logs" / "memory.csv")
+    if peak:
+        summary["peak memory (GB)"], summary["peak containers"] = peak
+    summary["_label"] = series_label(run)
     summary["_per_epoch"] = per_epoch(steps, epochs)
     summary["_hit_rate_over_time"] = hit_rate_over_time(run, dumps)
     summary["_hits_per_epoch"] = hits_per_epoch(run, steps, summary["_hit_rate_over_time"], epochs)
@@ -222,7 +236,7 @@ def hit_rate_over_time(run: Path, dumps: list) -> list:
     rows, prev_hits, prev_nodes = [], 0, 0
     for dump in dumps:
         stats = cache_stats(dump)
-        hits, nodes = stats.get("hits", 0), stats.get("nodes", 0)
+        hits, nodes = stats.get("hits", 0), stats.get("calls", 0)  # cached calls = misses so far
         lookups = hits + nodes
         d_hits, d_nodes = hits - prev_hits, nodes - prev_nodes
         rows.append({
@@ -295,8 +309,33 @@ def write_csv(path: Path, steps: list) -> None:
         writer.writerows(steps)
 
 
-def series_label(run_name: str) -> str:
-    return "No-cache" if run_name.endswith("nocache") else "Cache"
+def run_config(run: Path) -> dict:
+    """The settings train_pilot.sh recorded in <run>/config.env."""
+    path = run / "config.env"
+    if not path.exists():
+        return {}
+    pairs = (line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
+    return {key: value.strip("'\"") for key, value in pairs}
+
+
+def series_label(run: Path) -> str:
+    config = run_config(run)
+    cache = config.get("CACHE") or ("none" if run.name.endswith("nocache") else "tvcache")
+    if cache == "none":
+        return "No-cache"
+    if cache == "contraction":
+        return f"Contraction ({config.get('THRESHOLD', '?')}, {config.get('EMBEDDER', '?')})"
+    return "Cache"
+
+
+def peak_memory(memory_csv: Path):
+    """(peak job memory in GB, most containers at once) from logs/memory.csv."""
+    if not memory_csv.exists():
+        return None
+    rows = list(csv.DictReader(memory_csv.open()))
+    memory = [float(r["cgroup_mem_gb"]) for r in rows if r.get("cgroup_mem_gb") not in (None, "", "NA")]
+    containers = [int(r["containers"]) for r in rows if (r.get("containers") or "").strip().isdigit()]
+    return (max(memory, default=0.0), max(containers, default=0)) if rows else None
 
 
 def plot_per_epoch(summaries: list, out_dir: Path, key: str, ylabel: str, title: str, filename: str) -> Path:
@@ -305,12 +344,18 @@ def plot_per_epoch(summaries: list, out_dir: Path, key: str, ylabel: str, title:
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(7, 4.2), dpi=150)
+    # The two validated colors stay: blue for no cache, red for every cached
+    # run. Several cached runs (contraction settings) differ by line style.
+    styles, cached = ["-", "--", ":", "-."], 0
     for summary in summaries:
-        label = series_label(summary["run"])
+        label = summary["_label"]
         color = SERIES_COLORS["nocache" if label == "No-cache" else "cache"]
+        style = "-"
+        if label != "No-cache":
+            style, cached = styles[cached % len(styles)], cached + 1
         xs = [r["epoch"] for r in summary["_per_epoch"]]
         ys = [r[key] for r in summary["_per_epoch"]]
-        ax.plot(xs, ys, color=color, linewidth=2, marker="o", markersize=5, label=label)
+        ax.plot(xs, ys, color=color, linewidth=2, linestyle=style, marker="o", markersize=5, label=label)
         ax.annotate(label, (xs[-1], ys[-1]), xytext=(6, 0), textcoords="offset points",
                     va="center", fontsize=9, color="#444444")
     ax.set_title(f"{title} on {WORKLOAD_TITLE}", fontsize=13, pad=12)

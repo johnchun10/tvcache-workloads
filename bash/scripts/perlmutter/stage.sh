@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SUPERSEDED by bootstrap.sh, which clones the repositories on Perlmutter
+# itself. Kept for copying uncommitted working trees from a laptop; it stages
+# the older main/fixes builds, not the combined one bootstrap.sh uses.
 # Run on the Mac (after `sshproxy -u <user>`): copies everything the pilot
 # needs to $SCRATCH/tvcache on Perlmutter.
 #   REMOTE=<user>@perlmutter.nersc.gov bash stage.sh
