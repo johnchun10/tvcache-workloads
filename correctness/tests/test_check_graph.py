@@ -10,6 +10,7 @@ from tvclient import TvcacheToolExecutor, TVCacheClient
 from tvverify.adapters.mock_fs import ToyCall, ToyFsSandbox
 from tvverify.adapters.toyfs_adapter import ToyFsAdapter
 from tvverify.check import _classify, main_graph, select_nodes
+from tvverify.model.dump import plain_dump
 from tvverify.model.graph import from_dumpall
 from tvverify.replay.engine import ReplayEngine
 from tvverify.report import render
@@ -53,7 +54,7 @@ def test_clean_dump_passes_and_writes_json(server, tmp_path):
 
 def test_tampered_value_is_a_bug(server, tmp_path):
     with ToyFsSandbox.isolated():
-        dump = save_dump(server.port, tmp_path)
+        dump = plain_dump(save_dump(server.port, tmp_path))  # one shape, whichever server wrote it
         node = dump["cg"]["root"]["children"][w.serialize()]["children"][r.serialize()]
         node["value"] = "tampered"
         (tmp_path / "dump.json").write_text(json.dumps(dump))

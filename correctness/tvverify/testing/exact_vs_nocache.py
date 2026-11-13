@@ -12,6 +12,7 @@ from tvclient.tool_call import ToolCall
 from tvverify.adapters.base import TEST_KEY, WorkloadAdapter
 from tvverify.adapters.mock_fs import ToyCall, ToyFsSandbox, rollout_set
 from tvverify.adapters.toyfs_adapter import ToyFsAdapter
+from tvverify.model.dump import plain_task
 from tvverify.testing.nocache import NoCacheToolExecutor
 
 
@@ -144,7 +145,7 @@ async def run_value_snapshot_coherence(port: int, trials: int = 10) -> List[str]
         async with TVCacheClient(port=port) as client:
             dump = (await client.dump_all())[task]
         nodes: list = []
-        _collect(dump["root"], [], nodes)
+        _collect(plain_task(dump)["root"], [], nodes)
         stored_ids = {n["sandbox_id"] for _, n in nodes if n["sandbox_id"]}
         for path, node in nodes:
             if node["sandbox_id"] is None:

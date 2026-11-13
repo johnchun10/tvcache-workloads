@@ -18,6 +18,8 @@ is a finding about one of them. The semantics modelled:
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
+from tvverify.model.dump import is_contracted, plain_task
+
 # bytes of fixed per-node overhead in the server's size accounting:
 # runtime(4) + ttl_present(1) + ttl(4) + inserted_at(8) + cache_hits(8) + lpm_hits(8)
 NODE_OVERHEAD_BYTES = 33
@@ -171,7 +173,11 @@ class RefTrie:
         human-readable differences (empty means identical). Ignores the TTL
         clock, which depends on wall time."""
         problems: List[str] = []
-        for name, want in self.counters().items():
+        counters = self.counters()
+        if is_contracted(dump):  # a server with contraction stores one more byte per node (`settled`)
+            counters["size_in_bytes"] += counters["number_of_nodes"]
+        dump = plain_task(dump)
+        for name, want in counters.items():
             if dump[name] != want:
                 problems.append(f"{name}: server {dump[name]} != model {want}")
         if dump["sandbox_references"] != self.references:
