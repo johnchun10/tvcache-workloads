@@ -1,9 +1,8 @@
 # Running the TVCache Terminal-Bench pilot on Perlmutter
 
-> **Newer than this guide:** the code now comes from git with `bootstrap.sh`
-> instead of `stage.sh`, and runs start with `run.sh <preset>` (see
-> `README.md`). The account setup, podman probe, veRL environment and FAQ
-> below still apply as written.
+> **Partly out of date.** Sections 0 to 4 and the FAQ are current. Sections 5
+> to 10 still show the original pilot's commands (`TVCACHE_VARIANT=... bash
+> train_pilot.sh`); runs now start with `bash run.sh <preset>`, see `README.md`.
 
 A step-by-step guide, from a laptop with the repos checked out to a finished
 training run with a tvverify report. `README.md` in this directory is the
@@ -22,18 +21,14 @@ server, container manager, containers, veRL) runs on a single node.
 
 - A NERSC account with MFA set up, and a project with GPU hours (we used
   `m4999`). Replace `<user>` and `<project>` below.
-- On your laptop, the four repos side by side in one folder, with these
-  branches present locally (`stage.sh` copies them from here):
+- Nothing on your laptop: the code is cloned from git on Perlmutter itself.
+  `bootstrap.sh` uses these branches of the `johnchun10` forks:
 
   | Repo | Branch |
   |---|---|
-  | `tvcache-workloads` | `perlmutter-pilot` (checked out; its working tree is copied as is) |
-  | `container-manager-public` | `podman-hpc` (checked out; the working tree is copied as is) |
-  | `tvclient` | `main` and `correctness-fixes` (both exported with `git archive`) |
-  | `tvcache-rust` | `main` and `correctness-fixes` (same) |
-
-  Only committed state of `tvclient` / `tvcache-rust` is staged, so
-  uncommitted edits there never reach Perlmutter.
+  | `tvcache-workloads` | `contraction-runs` |
+  | `container-manager-public` | `main` |
+  | `tvclient`, `tvcache-rust` | `contraction-plus-fixes` |
 
 ## 1. Log in from your laptop
 
@@ -58,22 +53,21 @@ per 24 h):
 
 Check: `ssh perlmutter 'echo $SCRATCH'` prints `/pscratch/sd/<x>/<user>`.
 
-## 2. Copy the code over
+## 2. Get the code
 
-From `tvcache-workloads/bash/scripts/perlmutter` on the laptop:
+On a Perlmutter login node:
 
-    REMOTE=perlmutter bash stage.sh
+    git clone -b contraction-runs https://github.com/johnchun10/tvcache-workloads.git $SCRATCH/tvcache/tvcache-workloads
+    bash $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter/bootstrap.sh
 
-This puts everything under `$SCRATCH/tvcache` on Perlmutter:
+This puts everything under `$SCRATCH/tvcache`:
 
     $SCRATCH/tvcache/
       tvcache-workloads/          container-manager-public/
-      variants/main/{tvclient,tvcache-rust}     # TVCache main, unmodified
-      variants/fixes/{tvclient,tvcache-rust}    # correctness-fixes branches
+      variants/combined/{tvclient,tvcache-rust}   # contraction plus the correctness fixes
 
-Rerun `stage.sh` after every local change; it uses `rsync --delete`, so
-files you created inside those directories on Perlmutter get removed (runs
-live in `$SCRATCH/tvcache/runs`, which is safe).
+Run `bootstrap.sh` again to pick up new commits, then `setup.sh` again.
+Runs live in `$SCRATCH/tvcache/runs`.
 
 ## 3. One-time setup on a login node
 
