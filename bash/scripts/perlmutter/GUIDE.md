@@ -1,19 +1,17 @@
 # Running the TVCache Terminal-Bench pilot on Perlmutter
 
-> **Partly out of date.** Sections 0 to 4 and the FAQ are current. Sections 5
-> to 10 still show the original pilot's commands (`TVCACHE_VARIANT=... bash
-> train_pilot.sh`); runs now start with `bash run.sh <preset>`, see `README.md`.
+A step-by-step guide, from a new NERSC account to a finished training run
+with a tvverify report. `README.md` in this directory is the short
+reference; `ISSUES.md` has the history of what broke during bring-up.
+Sections 1 to 4 and 6 were done for real on 2026-11-02/03. The `run.sh`
+flow in sections 5, 7 and 8 was rehearsed off Perlmutter and had not yet
+run there when this was written.
 
-A step-by-step guide, from a laptop with the repos checked out to a finished
-training run with a tvverify report. `README.md` in this directory is the
-short reference; `ISSUES.md` has the full history of what broke during
-bring-up. Everything here was done for real on 2026-11-02/03.
-
-What runs: GRPO training with veRL 0.9.1 on 49 of the 51 easy
-Terminal-Bench tasks (`container-manager-public/tasks_easy_network_skip`),
-Qwen2.5-1.5B-Instruct, every bash command going through TVCache. Afterwards
-`tvverify check-graph` checks the cache the run built. Everything (cache
-server, container manager, containers, veRL) runs on a single node.
+What runs: GRPO training with veRL 0.9.1 on Terminal-Bench tasks,
+Qwen2.5-1.5B-Instruct, with every bash command going through TVCache,
+TVCache with graph contraction, or no cache. Afterwards `tvverify
+check-graph` checks the cache the run built. Everything (cache server,
+container manager, containers, veRL) runs on a single node.
 
 ---
 
@@ -101,10 +99,11 @@ instead (see FAQ).
     cd $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter
     bash setup.sh
 
-This builds both `tvcache-rust` variants with cargo (`module load
-rust/stable`), installs `tvclient`, `tvcache-workloads` and `tvverify` into
-the veRL env, and downloads Qwen2.5-1.5B-Instruct to `$SCRATCH/hf/`. It
-ends with `python side ok: verl 0.9.1 ...`.
+This builds the cache server with cargo (`module load rust/stable`),
+installs `tvclient`, `tvcache-workloads`, `tvverify` and
+`sentence-transformers` into the veRL env, downloads Qwen2.5-1.5B-Instruct
+to `$SCRATCH/hf/`, and loads both embedding models once. Check for
+`python side ok: verl 0.9.1 ...` and `embedder ... ok` for each model.
 
 ## 4. Probe podman (the gate)
 
@@ -122,18 +121,16 @@ this works. Optionally confirm on a compute node (about 0.05 node-hours):
 
 Finds tasks whose image does not build before you pay for GPU time.
 
-    source env.sh
-    LOG=$TVROOT/runs/prebuild-login; mkdir -p $LOG
-    $CONTAINER_CLI system service --time=0 "unix://$PODMAN_SOCKET" > $LOG/podman.log 2>&1 & SVC=$!
-    MANAGER_REPO=$TVROOT/container-manager-public bash ../start_manager.sh > $LOG/manager.log 2>&1 &
-    wait_for_port $FLASK_PORT 300 manager
-    $VERL_PY prebuild.py $TASKS_ROOT --parallel 4 --out $LOG/prebuild.json
-    pkill -u $USER -f server.py; kill $SVC
+    cd $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter
+    bash run.sh shakedown --prebuild            # or main20-easy-med
 
-Expect `49/51 built`; `fix-git` and `accelerate-maximal-square` fail and are
-already excluded (`EXCLUDE_TASKS` in `train_pilot.sh`). Builds took a median
-of 51 s, max 287 s (`png-generation`). Afterwards `podman-hpc ps -a` should
-be empty; if not, `podman-hpc rm -af`.
+It starts podman's service and the manager, builds every task of the preset
+once, prints `ok` or `FAIL` per task, and stops. Replace a task that fails
+with `--tasks "..."` or by editing the preset. Afterwards `podman-hpc ps -a`
+should be empty; if not, `podman-hpc rm -af`.
+
+The original pilot built 49 of the 51 easy tasks; `fix-git` and
+`accelerate-maximal-square` fail on Perlmutter. Builds took a median of 51 s.
 
 Note: images are **node-local**, so a GPU job still builds each task once on
 its own node. Prebuilding is for catching failures, not for warming the
@@ -151,42 +148,37 @@ compute node.
       $VERL_PY -m tvverify check --adapter tvcache_workloads.bash.verify:HelloWorldAdapter --rollouts 5)
     pkill -u $USER -f server.py; kill $CACHE $SVC
 
-Must match the Mac: contract 11/11 (1 skip), cache PASS, replay PASS, and no
-leftover containers or snapshot images. Prefix with `TVCACHE_VARIANT=main`
-to smoke-test the base cache.
+Expect contract 11/11 (1 skip), cache PASS, replay PASS, and no leftover
+containers or snapshot images.
 
-## 7. Sampling test (GPU, about 1 node-hour)
+## 7. Shakedown (GPU)
 
-Rollouts only, no training: checks the whole pipeline end to end.
+One easy and one medium task, small settings, contraction on: checks that
+every part runs before the long runs.
 
     cd $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter
     mkdir -p $SCRATCH/tvcache/runs/slurm
-    sbatch -q shared -C gpu -G 2 -c 64 -t 02:00:00 -A <project> -J tv-sample \
-      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "MODE=sample bash train_pilot.sh"
+    sbatch -q shared -C gpu -G 2 -c 64 -t 02:00:00 -A <project> -J tv-shakedown \
+      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "bash run.sh shakedown"
 
-Ours took about 43 min of rollouts (297 `/start`, 686 `/execute`), then
-tvverify: 118/118 nodes replayed, 0 cache vs no-cache mismatches.
+Read `$RUN/logs/run.txt` afterwards: the state check's verdict per task,
+veRL's exit code, peak memory, the contraction totals, and leftover
+snapshots. `--mode sample` runs rollouts only, with no training.
 
-## 8. The pilot (GPU, about 2.5 node-hours per variant)
+## 8. The evaluation runs (GPU)
 
-    sbatch -q shared -C gpu -G 2 -c 64 -t 08:00:00 -A <project> -J tv-train-main \
-      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "TVCACHE_VARIANT=main MODE=train bash train_pilot.sh"
+The same preset three ways, then the contraction settings:
 
-    sbatch -q shared -C gpu -G 2 -c 64 -t 08:00:00 -A <project> -J tv-train-fixes \
-      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "TVCACHE_VARIANT=fixes MODE=train bash train_pilot.sh"
+    sbatch ... -t 08:00:00 -J tv-none     --wrap "bash run.sh main20-easy-med --cache none"
+    sbatch ... -t 08:00:00 -J tv-tvcache  --wrap "bash run.sh main20-easy-med --cache tvcache"
+    sbatch ... -t 08:00:00 -J tv-contract --wrap "bash run.sh main20-easy-med --cache contraction --threshold 0.9 --embedder minilm"
 
-- `main` is the **base cache** (unmodified TVCache, no trace hooks). Its
-  tvverify report is the baseline: what goes wrong with no fixes applied.
-- `fixes` runs the `correctness-fixes` branches and also writes a
-  per-lookup trace.
-- `nocache` runs the same training with **no cache at all**: every command
-  executes in the rollout's own container (`TVCACHE_USE_CACHE=0`,
-  `DirectExecutor` in `bash/verl/direct.py`). No cache server, sidecar,
-  dumps or tvverify. Pair it with `main` or `fixes` for a with/without
-  TVCache comparison:
-
-      sbatch -q shared -C gpu -G 2 -c 64 -t 08:00:00 -A <project> -J tv-train-nocache \
-        -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "TVCACHE_VARIANT=nocache MODE=train bash train_pilot.sh"
+- `none` runs every command in the rollout's own container: no cache server,
+  dumps or tvverify. The baseline.
+- `tvcache` is the cache without contraction.
+- `contraction` adds embeddings, the per-task state check and the contraction
+  coordinator. Sweep `--threshold` (0.8, 0.9, 0.95) and `--embedder` (`minilm`,
+  `jina-code`).
 
 Use **half a node** (`-G 2 -c 64`, about 120 GB RAM) even though veRL uses
 one GPU: a quarter node ran out of memory (FAQ). `sbatch` on the `shared`
@@ -195,52 +187,44 @@ QoS keeps running if your SSH drops.
 **While it runs:**
 
     squeue --me
-    tail -f $SCRATCH/tvcache/runs/slurm/tv-train-*-<jobid>.out
-    RUN=$(ls -td $SCRATCH/tvcache/runs/*-train-* | head -1)
+    tail -f $SCRATCH/tvcache/runs/slurm/tv-*-<jobid>.out
+    RUN=$(ls -td $SCRATCH/tvcache/runs/*-main20-* | head -1)
     tail -3 $RUN/logs/memory.csv            # memory once a minute; should stay well under 120 GB
-    grep -c "POST /execute" $RUN/logs/manager.log
+    tail -3 $RUN/contraction/events.jsonl   # contraction runs only
 
 **Resume** after a timeout: resubmit with the same `RUN=<path>`. Checkpoints
 are saved every 10 steps; the cache restarts empty.
 
 ## 9. What a run leaves in `$RUN`
 
-| Path | What |
-|---|---|
-| `report.md` | tvverify's combined report: bugs, noise, inconclusive, per task. Start here |
-| `logs/run.txt` | summary: variant, mode, veRL exit code, leftover snapshot images |
-| `logs/verl.log`, `cache.log`, `manager.log`, `podman.log`, `sidecar.log` | per-process logs |
-| `logs/memory.csv` | cgroup memory, podman store size, containers, images per minute |
-| `dumps/dump_*.json` | full cache dumps every 10 min and at the end |
-| `check/dump_*.json`, `.log` | `check-graph` per dump; only the last one checks snapshots (C2a) |
-| `trace/` | per-lookup trace (`fixes` only) |
-| `checkpoints/` | veRL checkpoints |
+`README.md` has the full table. Start with `logs/run.txt` (settings and
+outcome) and `report.md` (tvverify). Compare runs with
 
-Copy results to the laptop:
+    $VERL_PY compare_runs.py $TVROOT/runs/<a> $TVROOT/runs/<b> ... --plot charts/
+
+Copy results to a laptop:
 
     rsync -az --exclude checkpoints perlmutter:'$SCRATCH/tvcache/runs/<run>' ./runs/
 
 ## 10. Configuration
 
-All set in `env.sh` or at the top of `train_pilot.sh`; override on the
-command line (`EPOCHS=1 MODE=train bash train_pilot.sh`).
+`run.sh` flags cover the settings that change between runs (`README.md`
+lists them; `bash run.sh <preset> --dry-run` prints what a run would use).
+Everything else comes from the environment:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TVCACHE_VARIANT` | `fixes` | `main` (base cache), `fixes`, or `nocache` (no cache: the baseline) |
-| `MODE` | `train` | `sample` (val only) or `train` |
-| `EPOCHS` / `ROLLOUTS` / `BATCH` | 5 / 4 / 4 | GRPO epochs, group size, tasks per step |
+| `TVCACHE_VARIANT` | `combined` | which build under `variants/` to use |
 | `N_GPUS` | 1 | GPUs veRL uses |
 | `SNAPSHOT_THRESHOLD` | `1.0` | fixed snapshot threshold in seconds; empty = tvclient's adaptive policy (rarely snapshots) |
 | `CHECK_NODES` | 20 | tvverify nodes replayed per task |
 | `DUMP_INTERVAL` | 600 | seconds between cache dumps |
-| `EXCLUDE_TASKS` | `fix-git accelerate-maximal-square` | tasks left out of the dataset |
+| `MAX_TURNS` | 30 | tool calls per rollout |
 | `MODEL` | `$SCRATCH/hf/Qwen2.5-1.5B-Instruct` | model path |
-| `TASKS_ROOT` | `.../tasks_easy_network_skip` | task directory |
-| `RUN` | `runs/<time>-<mode>-<variant>` | output directory; reuse to resume |
+| `RUN` | `runs/<time>-<preset>-<cache mode>` | output directory; reuse to resume |
 | `VERL_PY` | `$TVROOT/verl-env/bin/python` | Python with veRL, vLLM, tvclient, tvverify |
 | `CONTAINER_CLI` / `COMPOSE_CMD` / `DOCKER_HOST` | `podman-hpc` / `~/bin/docker-compose` / podman socket | container runtime used by the manager |
-| `TVCACHE_PORT` / `FLASK_PORT` | 7878 / 9901 | cache server / manager ports (TVCache `main` is hard-wired to 7878) |
+| `TVCACHE_PORT` / `FLASK_PORT` / `TVCACHE_CONTRACTION_PORT` | 7878 / 9901 / 7879 | cache server, manager, contraction coordinator |
 
 ## 11. Budget
 
@@ -249,9 +233,9 @@ command line (`EPOCHS=1 MODE=train bash train_pilot.sh`).
 | Setup, probe, prebuild, smoke test (login node) | free |
 | Compute-node probe | ~0.05 node-hours |
 | Sampling test, half node | ~0.5–1 |
-| One pilot variant, half node, 4.5–5 h | ~2.5 |
+| One run of the original 49-task pilot, half node, 4.5–5 h | ~2.5 |
 
-Both variants plus the sampling test fit in about 6–7 node-hours. Check
+A `main20-easy-med` run has not been timed yet; expect the same order. Check
 usage with `sshare -A <project>` or Iris.
 
 ---
@@ -272,11 +256,11 @@ over: `podman-hpc rm -f buildx_buildkit_default`.
 
 **Every `/start` fails with `lchown ... invalid argument`.** Files copied
 into containers carried your host uid, which rootless podman cannot map.
-Fixed in the `podman-hpc` branch of container-manager-public; make sure
-that branch is the one checked out when you run `stage.sh`.
+Fixed in `main` of our container-manager-public fork, which `bootstrap.sh`
+clones.
 
 **Every `/start` returns 500 with `UnboundLocalError: ... 'e'`.** Old
-manager without the `last_error` fix; same answer: use `podman-hpc`.
+manager without the `last_error` fix; same answer: use the fork's `main`.
 
 **The manager log is missing the real error.** Its output was
 block-buffered and lost when it was killed. `start_manager.sh` sets
@@ -288,7 +272,7 @@ block-buffered and lost when it was killed. `start_manager.sh` sets
 **`fix-git` or `accelerate-maximal-square` does not build.** Expected.
 `fix-git` clones a GitHub repo that is gone (404, fails everywhere);
 `accelerate-maximal-square`'s base image has uids beyond rootless podman's
-range. Both are in `EXCLUDE_TASKS`.
+range. Neither is in the presets.
 
 **`RuntimeError: tvcache-rust not found` from tvverify.** It looks next to
 `tvcache-workloads`; on Perlmutter it is under `variants/`. `env.sh` sets
@@ -296,8 +280,8 @@ range. Both are in `EXCLUDE_TASKS`.
 
 **Contract check fails: restored cwd is `/app` instead of `/app/work`.**
 The tmux-resurrect plugin (`container-manager-public/rlhf_server/tmux-res`)
-was not staged, so cwd and exported variables are never saved. Don't
-exclude `tmux-res` in `stage.sh`. This fails silently in the manager; only
+is missing from the manager checkout, so cwd and exported variables are
+never saved. This fails silently in the manager; only
 tvverify's contract check catches it.
 
 **Job dies early: `container manager did not open port 9901`, manager log

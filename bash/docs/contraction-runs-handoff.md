@@ -138,16 +138,16 @@ Test recipe (paths relative to `tvcache-workloads`, with a combined `tvclient` c
 
 ## 6. TODO 3: documentation still to update
 
-Done in this branch: `bash/scripts/perlmutter/README.md` (current), module docstrings,
-this file, `AGENTS.md`, and sections 0 and 2 of `GUIDE.md`.
+Done: `bash/scripts/perlmutter/README.md` and `GUIDE.md` (both current), module
+docstrings, this file, `AGENTS.md`. `stage.sh` was removed (replaced by `bootstrap.sh`).
+In the parent `tvcache` folder, `TVCACHE_PROJECT_KNOWLEDGE.md` was updated and the old
+`PERLMUTTER_PILOT_GUIDE.md` copy deleted.
 
-Still stale:
-- `GUIDE.md` sections 5, 7, 8, 9, 10 and two FAQ entries still use the old
-  `TVCACHE_VARIANT=... bash train_pilot.sh` commands and mention `stage.sh`.
+Still to do:
 - `correctness/README.md` does not mention contracted dumps or aliases.
-- In the parent `tvcache` folder (outside any repo): `TVCACHE_PROJECT_KNOWLEDGE.md` and
-  `PERLMUTTER_PILOT_GUIDE.md` predate all of this.
 - No PR descriptions exist for the three branches.
+- `stage.sh` was deleted and `GUIDE.md` rewritten on this branch; the teammate's
+  tvcache-workloads PR may touch the same files, so expect that in the merge.
 
 ## 7. First run on Perlmutter
 
