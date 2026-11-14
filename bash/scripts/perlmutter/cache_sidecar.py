@@ -126,9 +126,6 @@ class Control:
             step, epoch, tasks = request["step"], request["epoch"], request["tasks"]
             now = time.time()
             self.log("end", step=step, epoch=epoch, tasks=tasks, last=request.get("last", False))
-            if request.get("last"):
-                await self._epoch_dump(epoch)
-                return {"ok": True}
             # The graph each task's contraction now starts on (stats.py: depth
             # reached / graph depth).
             async with TVCacheClient(self.args.host, self.args.port, timeout=120) as client:
@@ -139,6 +136,8 @@ class Control:
                 self.log("graph", task=cache_id, step=step, epoch=epoch,
                          graph_depth=graph_depth(dump.get(cache_id)),
                          graph_nodes=(dump.get(cache_id) or {}).get("number_of_nodes"))
+            if request.get("last"):
+                await self._epoch_dump(epoch)
             return {"ok": True}
         if op == "stats":
             return {"shelf": self.bank.live_count(), **self.bank.stats}
