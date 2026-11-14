@@ -24,11 +24,16 @@ Every decision is appended to the events file with a timestamp:
   groups           one sibling listing: how many similar pairs the server found
   apply            one group applied: how many classes were merged
   job_end          a job's totals (comparisons, merges, restores, replays)
+  round            the same job's full JobSummary (similar pairs, equal
+                   comparisons, sandboxes built, preempted, walltime), when
+                   tvclient's Contractor takes on_summary; read by verl/stats.py
 `summary` adds them up, in total and over time.
 """
 
 import argparse
 import asyncio
+import dataclasses
+import inspect
 import json
 import logging
 import os
@@ -309,9 +314,12 @@ async def serve(args: argparse.Namespace) -> None:
     sandbox = TerminalBenchSandbox.with_config(
         SandboxConfig(manager_url=args.manager_url, snapshot_mode=args.snapshot_mode)
     )
+    extra = {}
+    if "on_summary" in inspect.signature(Contractor).parameters:  # newer tvclient
+        extra["on_summary"] = lambda task, summary: events.write("round", task, **dataclasses.asdict(summary))
     contractor = Contractor(
         sandbox, BashToolCall, args.threshold, args.max_sandboxes,
-        host=args.cache_host, port=args.cache_port, timeout=args.cache_timeout,
+        host=args.cache_host, port=args.cache_port, timeout=args.cache_timeout, **extra,
     )
     skip = frozenset(task for task, learned in load_calibration().items() if not learned.get("comparable", True))
     coordinator = Coordinator(contractor, events, args.grace, args.lease, skip)
