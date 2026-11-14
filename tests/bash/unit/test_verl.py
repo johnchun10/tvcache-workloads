@@ -309,3 +309,26 @@ def test_dataset_skips_snapshot_task_dirs(tmp_path):
         (tmp_path / name).mkdir()
         (tmp_path / name / "task.yaml").write_text("instruction: Build it.\n")
     assert [r["extra_info"]["task_id"] for r in task_rows(tmp_path)] == ["build-stp", "my_task"]
+
+
+def test_control_port_hands_the_executor_the_sidecars_fork_bank(monkeypatch):
+    from tvcache_workloads.bash.control import RemoteForkGenerator
+    from tvcache_workloads.bash.verl import session as session_module
+
+    banks = []
+
+    class BankedExecutor(FakeExecutor):
+        def set_fork_bank(self, bank):
+            banks.append(bank)
+
+    monkeypatch.setattr(session_module, "TvcacheToolExecutor", lambda *a, **kw: BankedExecutor())
+    monkeypatch.setattr(session_module, "_fork_bank", None)
+
+    session_module.make_session("t", CacheSettings())  # no control port: no bank
+    assert banks == []
+    monkeypatch.setenv("TVCACHE_CONTROL_PORT", "7880")
+    settings = CacheSettings.from_config({})
+    assert settings.control_port == 7880
+    session_module.make_session("t", settings)
+    session_module.make_session("u", settings)
+    assert len(banks) == 2 and isinstance(banks[0], RemoteForkGenerator) and banks[0] is banks[1]  # one per process
