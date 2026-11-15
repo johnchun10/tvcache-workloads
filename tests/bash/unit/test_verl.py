@@ -300,3 +300,35 @@ def test_use_cache_false_makes_the_session_run_without_the_cache(monkeypatch):
     assert CacheSettings.from_config({}).use_cache is True
     assert CacheSettings.from_config({"use_cache": False}).use_cache is False  # YAML bool wins over the env
     assert len(cached) == 1  # the no-cache sessions never built a TvcacheToolExecutor
+
+
+def test_dataset_skips_snapshot_task_dirs(tmp_path):
+    # The manager's snapshot/restore copies (<task>_<uuid4>) that a run cut
+    # off by its time limit leaves next to the real task directories.
+    for name in ("build-stp", "build-stp_1957b802-7a7d-4d71-83cb-8028fabe77f6", "my_task"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "task.yaml").write_text("instruction: Build it.\n")
+    assert [r["extra_info"]["task_id"] for r in task_rows(tmp_path)] == ["build-stp", "my_task"]
+
+
+def test_control_port_hands_the_executor_the_sidecars_fork_bank(monkeypatch):
+    from tvcache_workloads.bash.control import RemoteForkGenerator
+    from tvcache_workloads.bash.verl import session as session_module
+
+    banks = []
+
+    class BankedExecutor(FakeExecutor):
+        def set_fork_bank(self, bank):
+            banks.append(bank)
+
+    monkeypatch.setattr(session_module, "TvcacheToolExecutor", lambda *a, **kw: BankedExecutor())
+    monkeypatch.setattr(session_module, "_fork_bank", None)
+
+    session_module.make_session("t", CacheSettings())  # no control port: no bank
+    assert banks == []
+    monkeypatch.setenv("TVCACHE_CONTROL_PORT", "7880")
+    settings = CacheSettings.from_config({})
+    assert settings.control_port == 7880
+    session_module.make_session("t", settings)
+    session_module.make_session("u", settings)
+    assert len(banks) == 2 and isinstance(banks[0], RemoteForkGenerator) and banks[0] is banks[1]  # one per process

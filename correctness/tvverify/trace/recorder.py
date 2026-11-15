@@ -7,7 +7,7 @@ blob directory, so traces stay small and values stay recoverable.
 
 Event types (all carry task, rollout, idx = lookup index within the rollout):
   lookup    path, hit, lpm_depth, sandbox_id
-  resume    source (fork|live|fresh), depth, env_id
+  resume    source (fork|live|fresh), depth, env_id, from_bank
   executed  depth, key, value_sha, runtime_s, failed, digest?
   snapshot  depth, sandbox_id, digest?
   insert    path, value_sha, sandbox_id, value_inserted, sandbox_inserted
@@ -109,8 +109,8 @@ class TraceRecorder(ExecutionObserver):
             sandbox_id=found.sandbox_id,
         )
 
-    async def on_resume(self, ctx, source, depth, env_id) -> None:
-        self._emit(ctx, "resume", source=source, depth=depth, env_id=env_id)
+    async def on_resume(self, ctx, source, depth, env_id, from_bank=False) -> None:
+        self._emit(ctx, "resume", source=source, depth=depth, env_id=env_id, from_bank=from_bank)
 
     async def on_executed(self, ctx, depth, call, value, runtime_seconds, failed, digest) -> None:
         self._emit(

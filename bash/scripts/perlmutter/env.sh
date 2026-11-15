@@ -35,13 +35,15 @@ export COMPOSE_CMD="${COMPOSE_CMD:-$HOME/bin/docker-compose}"
 # through the podman API instead.
 export DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0
 
-# Cache server and container manager (all on the job's node)
+# Cache server and container manager: on the job's node, or on the server node
+# of a heterogeneous job (hetjob.sbatch; the client points TVCACHE_HOST there)
 export TVCACHE_HOST="${TVCACHE_HOST:-127.0.0.1}"
 export TVCACHE_PORT="${TVCACHE_PORT:-7878}"              # TVCache main always uses 7878
 export FLASK_PORT="${FLASK_PORT:-9901}"
 export TVCACHE_MANAGER_URL="${TVCACHE_MANAGER_URL:-http://127.0.0.1:$FLASK_PORT}"
 
 export TVCACHE_CONTRACTION_PORT_DEFAULT=7879             # the contraction coordinator's control port
+export TVCACHE_CONTROL_PORT_DEFAULT=7880                 # the sidecar's fork bank (bash/control.py)
 
 variant_dir() { echo "$TVROOT/variants/$TVCACHE_VARIANT"; }
 # tvverify builds and starts its own debug server from here (it is not next to
@@ -59,11 +61,12 @@ mkdir -p "$HF_HOME" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE
 # The variant's tvclient wins over any installed one, in this shell and in Ray workers.
 export PYTHONPATH="$(variant_dir)/tvclient${PYTHONPATH:+:$PYTHONPATH}"
 
-wait_for_port() {  # wait_for_port PORT SECONDS NAME
+wait_for_port() {  # wait_for_port PORT SECONDS NAME [HOST]
+  local host="${4:-127.0.0.1}"
   for _ in $(seq 1 "$2"); do
-    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && return 0
+    (exec 3<>"/dev/tcp/$host/$1") 2>/dev/null && return 0
     sleep 1
   done
-  echo "$3 did not open port $1 within $2 s" >&2
+  echo "$3 did not open port $1 on $host within $2 s" >&2
   return 1
 }

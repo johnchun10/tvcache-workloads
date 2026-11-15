@@ -62,6 +62,9 @@ class CacheSettings:
     # The contraction coordinator's control port (contraction.py); 0 = no
     # contraction, so rollouts never wait for it.
     contraction_port: int = 0
+    # The fork bank's control port (bash/control.py, served by the sidecar);
+    # set = a fresh or forked sandbox is taken ready-made from its shelf.
+    control_port: Optional[int] = None
 
     @staticmethod
     def from_config(config: dict) -> "CacheSettings":
@@ -84,6 +87,7 @@ class CacheSettings:
             "use_cache": get("use_cache", "TVCACHE_USE_CACHE", _as_bool),
             "embedder": get("embedder", "TVCACHE_EMBEDDER"),
             "contraction_port": get("contraction_port", "TVCACHE_CONTRACTION_PORT", int),
+            "control_port": get("control_port", "TVCACHE_CONTROL_PORT", int),
         }
         return CacheSettings(**{k: v for k, v in values.items() if v is not None})
 
@@ -96,6 +100,17 @@ def _as_bool(value) -> bool:
 
 
 _recorder = None
+_fork_bank = None
+
+
+def _remote_fork_bank():
+    """One client of the sidecar's fork bank per worker process."""
+    global _fork_bank
+    if _fork_bank is None:
+        from tvcache_workloads.bash.control import RemoteForkGenerator
+
+        _fork_bank = RemoteForkGenerator()
+    return _fork_bank
 
 
 def _trace_recorder(trace_dir: str):
@@ -197,6 +212,8 @@ def make_session(task: str, settings: CacheSettings) -> RolloutSession:
     # across concurrent rollouts); set directly, since set_rollout_id() opens
     # a log file per rollout.
     executor.rollout_id = uuid.uuid4().hex
+    if settings.control_port:
+        executor.set_fork_bank(_remote_fork_bank())
     gate = ContractionGate(settings.cache_host, settings.contraction_port) if settings.contraction_port else None
     return RolloutSession(task, executor, gate=gate, cache_task=settings.cache_task_id(task))
 

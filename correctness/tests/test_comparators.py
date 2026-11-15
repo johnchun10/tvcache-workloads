@@ -66,6 +66,20 @@ def test_pytest_and_package_manager_chatter():
     assert not same("Installed foo", "Installed bar").equal
 
 
+def test_pip_requirement_lines_in_any_order():
+    # Seen in training (fix-pandas-version): pip printed the same dependency
+    # lines in a different order on each fresh run.
+    req = "Requirement already satisfied: "
+    a = f"{req}pandas (1.3.0)\n{req}pytz (2026.6)\n{req}six (1.17.0)\nWARNING: root"
+    b = f"{req}pandas (1.3.0)\n{req}six (1.17.0)\n{req}pytz (2026.6)\nWARNING: root"
+    assert same(a, b).equal
+    assert "pip_requirement_order" in same(a, b).normalizers_needed
+    # A different version, a missing line or a line moved past other output still differs.
+    assert not same(a, a.replace("2026.6", "2025.2")).equal
+    assert not same(a, f"{req}pandas (1.3.0)\n{req}six (1.17.0)\nWARNING: root").equal
+    assert not same(a, f"{req}pandas (1.3.0)\n{req}six (1.17.0)\nWARNING: root\n{req}pytz (2026.6)").equal
+
+
 def test_trailing_whitespace():
     assert same("a  \nb\n\n", "a\nb").equal
     assert not same("a b", "a  b").equal
