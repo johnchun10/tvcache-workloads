@@ -22,7 +22,7 @@ Clone these side by side:
 tvcache/
   tvclient/                   github.com/abhivijay96/tvclient
   tvcache-rust/               github.com/abhivijay96/tvcache-rust
-  container-manager-public/   github.com/johnchun10/container-manager-public (branch cold-snapshots)
+  container-manager-public/   github.com/johnchun10/container-manager-public (our fork's main)
   tvcache-workloads/          this repo
 ```
 

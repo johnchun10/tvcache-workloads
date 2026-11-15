@@ -10,7 +10,7 @@ cleanup). Says nothing about real container state (see state_check.py, which
 runs against real containers at the start of every contraction run).
 
 Run: uv run pytest -m cache_integration   (needs the server from the
-contraction-plus-fixes branch of tvcache-rust)
+main of our tvcache-rust fork)
 """
 
 import asyncio

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts container-manager-public's HTTP server for the Bash workload.
-# Run it from the cold-snapshots branch of our fork for snapshot_mode="cold".
+# Run it from main of our fork for snapshot_mode="cold".
 #
 # ENABLE_CACHING=1 is required: it makes forks carry cwd and exported
 # variables (tmux-resurrect replay). server.py itself defaults it to 0;

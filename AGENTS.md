@@ -20,10 +20,12 @@ planned and should go in its own subpackage (`src/tvcache_workloads/sql/`, `sql/
 Data flow: runner -> `TvcacheToolExecutor` -> cache server. On a miss, the executor calls
 `TerminalBenchSandbox`, which sends HTTP requests to the manager, which runs Docker.
 
-Runs with graph contraction use the `contraction-plus-fixes` branch of our forks of
-tvclient and tvcache-rust (contraction plus the correctness fixes); everything else here
-also works against their `main`. Don't edit them from here. Changes to the manager go on
-our fork. `bash/docs/contraction-runs-handoff.md` has the current state and open tasks.
+Everything a run needs is in `main` of our forks (`github.com/johnchun10/...`) of all
+four repos: for tvclient and tvcache-rust that is graph contraction, the correctness
+fixes and the fork bank, which upstream `main` does not have yet. No other branch is
+used; `bash/scripts/perlmutter/bootstrap.sh` clones them. Don't edit the other repos
+from here. Changes to the manager go on our fork.
+`bash/docs/contraction-runs-handoff.md` has the current state and open tasks.
 
 ## Code map (`src/tvcache_workloads/bash/`)
 
@@ -45,6 +47,13 @@ our fork. `bash/docs/contraction-runs-handoff.md` has the current state and open
 - `contraction.py`: the coordinator that owns tvclient's `Contractor` and pauses a task's
   contraction while rollouts hold it; logs events and summarizes them.
 - `embedding.py`: the embedders a run can choose by name.
+- `control.py`: the client side of the fork bank's control port. The fork bank
+  (prewarming) itself lives in `bash/scripts/perlmutter/cache_sidecar.py`.
+- `verl/stats.py`: the testing plan's metrics for one run (`metrics.md`, `metrics.json`)
+  and the method/baseline ratio table. The one place hit rates are computed;
+  `compare_runs.py` reads its output.
+- `verl/trainer.py`, `verl/train.py`: veRL's trainer with step hooks, so the fork bank is
+  warmed one batch ahead and every step boundary is logged.
 - `verify.py`: tvverify adapter (`HelloWorldAdapter`, rollouts from `bash/traces/`).
 - `cache_admin.py`: `release_task_snapshots` marks a task's snapshots for eviction, then drains them. The drain is global across the cache server.
 
@@ -59,6 +68,9 @@ our fork. `bash/docs/contraction-runs-handoff.md` has the current state and open
 - **Environment equality is `TerminalBenchSandbox.equals()`, backed by `state.py`.** Graph
   contraction merges cached commands on its answer, so a change to what the probe hashes
   changes which merges happen. Keep the probe read-only and one line.
+- **Hit counters in dumps are not lookups.** The fork bank's `find` calls count as hits
+  on the server. Take hit rates from the trace (`verl/stats.py`), not from
+  `number_of_cache_hits`.
 - **Dumps come in two shapes.** A server with contraction lists children and keeps values
   under `tool_calls`. Read dumps through `cache_admin.node_children` or tvverify's `model/dump.py`.
 
