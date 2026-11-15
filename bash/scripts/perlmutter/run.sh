@@ -4,7 +4,7 @@
 #   bash run.sh shakedown                                   # the preset as written
 #   bash run.sh main20-easy-med --cache none                # no cache at all
 #   bash run.sh main20-easy-med --cache tvcache             # TVCache, no contraction
-#   bash run.sh main20-easy-med --threshold 0.95 --embedder jina-code
+#   bash run.sh main20-easy-med --threshold 0.97 --embedder embeddinggemma2
 #   bash run.sh shakedown --prebuild                        # login node: only build the task images
 #   bash run.sh shakedown --dry-run                         # print the settings and stop
 #
@@ -19,7 +19,7 @@
 # Flags:
 #   --cache none|tvcache|contraction   no cache / TVCache / TVCache with graph contraction
 #   --threshold X                      contraction: similarity threshold, e.g. 0.8 0.9 0.95
-#   --embedder minilm|jina-code        contraction: embedding model (or a sentence-transformers name)
+#   --embedder minilm|embeddinggemma2  contraction: embedding model (or a sentence-transformers name)
 #   --budget N                         contraction: live sandboxes all contraction jobs share
 #   --epochs N  --rollouts N  --batch N  --max-tokens N
 #   --verify | --no-verify             run tvverify on the cache afterwards, or not

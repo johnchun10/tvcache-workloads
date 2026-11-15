@@ -18,25 +18,25 @@ done
 # env.sh puts the chosen variant's tvclient first on PYTHONPATH, so this
 # install only has to bring tvclient's own dependencies.
 "$VERL_PY" -m pip install -q -e "$(variant_dir)/tvclient" -e "$TVROOT/tvcache-workloads" \
-  -e "$TVROOT/tvcache-workloads/correctness" pyyaml pandas pyarrow httpx docker "sentence-transformers>=2.3"
+  -e "$TVROOT/tvcache-workloads/correctness" pyyaml pandas pyarrow httpx docker
 "$VERL_PY" -c "import verl, vllm, tvclient, tvverify, tvcache_workloads.bash.verl.session; print('python side ok: verl', verl.__version__, 'vllm', vllm.__version__)"
 
 [[ -f "$MODEL/config.json" ]] || "$VERL_PY" -c "import sys; from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-1.5B-Instruct', local_dir=sys.argv[1])" "$MODEL"
 echo "model at $MODEL"
 
-# The embedding models contraction can use: download them into the shared
-# cache now and embed one command with each, so a model that cannot load
-# fails here and not inside a GPU job.
-"$VERL_PY" - <<'PY'
-from tvcache_workloads.bash.embedding import EMBEDDERS, CommandEmbedder
-
-for alias, (model, _, _) in EMBEDDERS.items():
-    try:
-        vector = CommandEmbedder(alias).encode("ls -la /app")
-        print(f"embedder {alias} ok: {model}, {len(vector)} dimensions")
-    except Exception as error:
-        print(f"embedder {alias} FAILED ({model}): {type(error).__name__}: {error}")
-PY
+# The embedding models contraction can use get their own environment, since
+# EmbeddingGemma 2 needs transformers >= 5.19 and veRL needs < 5.11
+# (ISSUES.md #28). A run starts one service from it (embedding.py). CPU
+# builds: the service does not use a GPU. The model's processor also wants
+# torchvision and Pillow, though only text is embedded.
+[[ -x "$EMBED_PY" ]] || "$VERL_PY" -m venv "$(dirname "$(dirname "$EMBED_PY")")"
+"$EMBED_PY" -m pip install -q --upgrade pip
+"$EMBED_PY" -m pip install -q torch==2.15.0 torchvision --index-url https://download.pytorch.org/whl/cpu
+"$EMBED_PY" -m pip install -q sentence-transformers==6.3.0 transformers==5.23.0 Pillow
+# Download each model into the shared cache now and embed one command with
+# it, so a model that cannot load fails here and not inside a GPU job.
+"$EMBED_PY" "$TVROOT/tvcache-workloads/src/tvcache_workloads/bash/embedding.py" check ||
+  echo "an embedder cannot load (see FAILED above); a run that picks it stops at startup"
 
 mkdir -p "$HOME/bin"
 [[ -x "$COMPOSE_CMD" ]] || echo "next: put a docker-compose binary at $COMPOSE_CMD (github.com/docker/compose releases, linux-x86_64)"

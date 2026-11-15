@@ -99,9 +99,11 @@ instead (see FAQ).
     bash setup.sh
 
 This builds the cache server with cargo (`module load rust/stable`),
-installs `tvclient`, `tvcache-workloads`, `tvverify` and
-`sentence-transformers` into the veRL env, downloads Qwen2.5-1.5B-Instruct
-to `$SCRATCH/hf/`, and loads both embedding models once. Check for
+installs `tvclient`, `tvcache-workloads` and `tvverify` into the veRL env,
+and downloads Qwen2.5-1.5B-Instruct to `$SCRATCH/hf/`. It also makes a
+second, small environment for the embedding models
+(`$SCRATCH/tvcache/embed-env`; they need a newer `transformers` than veRL
+allows) and loads both models once. Check for
 `python side ok: verl 0.9.1 ...` and `embedder ... ok` for each model.
 
 ## 4. Probe podman (the gate)
@@ -183,7 +185,7 @@ The same preset three ways, in one job, each mode with an empty cache:
 or one job per mode (`bash submit_hetjob.sh main20-easy-med --cache tvcache`).
 Then the contraction settings:
 
-    bash submit_hetjob.sh main20-easy-med --threshold 0.95 --embedder jina-code
+    bash submit_hetjob.sh main20-easy-med --threshold 0.97 --embedder embeddinggemma2
 
 - `none` runs every command in the rollout's own container: no cache server,
   dumps or tvverify; its `report.md` has only the outcome and the training
@@ -191,8 +193,9 @@ Then the contraction settings:
 - `tvcache` is the cache without contraction. The baseline for the testing
   plan's ratios.
 - `contraction` adds embeddings, the per-task state check and the contraction
-  coordinator. Sweep `--threshold` (0.8, 0.9, 0.95) and `--embedder` (`minilm`,
-  `jina-code`).
+  coordinator. Sweep `--embedder` (`minilm`, `embeddinggemma2`) and
+  `--threshold`: 0.8, 0.9, 0.95 for `minilm`, but 0.95, 0.97, 0.98 for
+  `embeddinggemma2`, whose scores sit much higher (README.md has the table).
 
 With both `tvcache` and `contraction` in `CACHES`, the job writes the testing
 plan's ratio table to `<run>-compare.md`.
@@ -246,8 +249,9 @@ Everything else comes from the environment:
 | `MODEL` | `$SCRATCH/hf/Qwen2.5-1.5B-Instruct` | model path |
 | `RUN` | `runs/<time>-<preset>-<cache mode>` | output directory; reuse to resume |
 | `VERL_PY` | `$TVROOT/verl-env/bin/python` | Python with veRL, vLLM, tvclient, tvverify |
+| `EMBED_PY` | `$TVROOT/embed-env/bin/python` | Python with sentence-transformers, for the embedding service |
 | `CONTAINER_CLI` / `COMPOSE_CMD` / `DOCKER_HOST` | `podman-hpc` / `~/bin/docker-compose` / podman socket | container runtime used by the manager |
-| `TVCACHE_PORT` / `FLASK_PORT` / `TVCACHE_CONTRACTION_PORT` / `TVCACHE_CONTROL_PORT` | 7878 / 9901 / 7879 / 7880 | cache server, manager, contraction coordinator, fork bank |
+| `TVCACHE_PORT` / `FLASK_PORT` / `TVCACHE_CONTRACTION_PORT` / `TVCACHE_CONTROL_PORT` / `TVCACHE_EMBED_PORT` | 7878 / 9901 / 7879 / 7880 / 7881 | cache server, manager, contraction coordinator, fork bank, embedding service |
 
 ## 11. Budget
 

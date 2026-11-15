@@ -48,7 +48,8 @@ It prints whether each step was a cache hit or executed, its output, and timings
 then deletes its snapshots. Useful options:
 
 - `--snapshot-mode parked` works with the original manager, which lacks the snapshot endpoints.
-- `--embed` stores command embeddings. This needs `sentence-transformers`.
+- `--embed` stores command embeddings (`--embedding-model minilm` or `embeddinggemma2`).
+  This needs `sentence-transformers`.
 
 ## Tests
 
