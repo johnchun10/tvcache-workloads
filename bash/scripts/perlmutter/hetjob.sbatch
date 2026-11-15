@@ -38,12 +38,14 @@ for cache in "${modes[@]}"; do
   # Whole node to each role: every CPU and all memory (the /tmp RAM disk with
   # podman's images counts toward it). CPU nodes have 256 hardware threads,
   # GPU nodes 128.
+  # /usr/bin/env, not env: srun runs the first file of that name on PATH, and
+  # the uv installer leaves a non-executable ~/.local/bin/env (ISSUES.md #27).
   srun --het-group=0 -N 1 -n 1 -c 256 --mem=0 --cpu-bind=none \
-    env ROLE=server RUN="$RUN" RESUME_FROM="$resume" \
+    /usr/bin/env ROLE=server RUN="$RUN" RESUME_FROM="$resume" \
     bash "$HERE/run.sh" "$PRESET" ${ARGS[@]+"${ARGS[@]}"} ${flags[@]+"${flags[@]}"} > "$RUN/server.out" 2>&1 &
   SERVER=$!
   srun --het-group=1 -N 1 -n 1 -c 128 --gpus=4 --mem=0 --cpu-bind=none \
-    env ROLE=client RUN="$RUN" RESUME_FROM="$resume" \
+    /usr/bin/env ROLE=client RUN="$RUN" RESUME_FROM="$resume" \
     bash "$HERE/run.sh" "$PRESET" ${ARGS[@]+"${ARGS[@]}"} ${flags[@]+"${flags[@]}"} > "$RUN/client.out" 2>&1
   client_status=$?
   # The client writes client.done itself; this covers a client that died
@@ -56,8 +58,8 @@ for cache in "${modes[@]}"; do
   if [[ "${RELEASE_GPU:-1}" == 1 && "$cache" == "$last" ]]; then
     scancel "${SLURM_JOB_ID}+1" && echo "$(date +%FT%T) released the GPU component"
   fi
-  wait "$SERVER"
-  echo "$(date +%FT%T) ${cache:-preset}: server exited $?"
+  wait "$SERVER"; server_status=$?   # kept first: $(date) below would reset $?
+  echo "$(date +%FT%T) ${cache:-preset}: server exited $server_status"
   (( client_status != 0 )) && status=$client_status
 done
 
