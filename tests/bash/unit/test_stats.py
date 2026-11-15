@@ -126,3 +126,50 @@ def test_compare_writes_the_ratio_table(tmp_path):
     table = stats.compare(metrics, metrics)
     assert "| method hit rate / baseline hit rate | 1.000 |" in table
     assert "| comparisons / similar pairs | 1.000 |" in table
+
+
+def add_run_files(run):
+    (run / "logs").mkdir(exist_ok=True)
+    (run / "logs" / "verl.log").write_text(
+        "x step:1 - timing_s/step:60.0 - timing_s/gen:30.0 - critic/score/mean:0.25\n"
+        "x step:2 - timing_s/step:40.0 - timing_s/gen:20.0 - critic/score/mean:0.75\n"
+    )
+    (run / "config.env").write_text(
+        "PRESET=shakedown\nCACHE=contraction\nEPOCHS=2\nTASK_NAMES=hello\\ world\n"
+    )
+    (run / "logs" / "run.txt").write_text("run: x\nveRL exited 0\nsnapshot images left: 0\nsomething else\n")
+
+
+def test_report_has_the_run_training_metrics_and_tvverify_in_one_file(tmp_path):
+    run = make_run(tmp_path)
+    add_run_files(run)
+    # an older run's layout: tvverify's own report at the top of the run directory
+    (run / "report.md").write_text("# tvverify report\n\n1 result file(s): **0 with bugs**.\n")
+    stats.write_report(run)
+    report = (run / "report.md").read_text()
+    assert report.startswith("# Run report: run")
+    assert "| CACHE | contraction |" in report and "| tasks | 2: hello world |" in report
+    assert "- veRL exited 0" in report and "something else" not in report
+    # steps go to the epoch control.jsonl gives them: step 1 -> epoch 0, step 2 -> epoch 1
+    assert "| 0 | 1 | 0.250 | 60.0 | 30.0 |" in report and "| 1 | 1 | 0.750 | 40.0 | 20.0 |" in report
+    assert "## Cache metrics per task, per epoch" in report and "## [M] Contraction rounds" in report
+    # tvverify's report was moved to check/ and is included under its own section
+    assert (run / "check" / "report.md").read_text().startswith("# tvverify report")
+    assert "## Correctness (tvverify)" in report and "### tvverify report" in report
+    assert "**0 with bugs**" in report
+    assert json.loads((run / "metrics.json").read_text())["training"]["steps"] == 2
+    stats.write_report(run)  # writing it again keeps tvverify's report where it is
+    assert (run / "check" / "report.md").read_text().startswith("# tvverify report")
+    assert (run / "report.md").read_text() == report
+
+
+def test_report_for_a_run_without_a_cache(tmp_path):
+    run = tmp_path / "none"
+    run.mkdir()
+    add_run_files(run)
+    (run / "config.env").write_text("CACHE=none\nEPOCHS=2\n")
+    stats.write_report(run)
+    report = (run / "report.md").read_text()
+    # no control.jsonl: the two steps are split evenly over the two epochs
+    assert "| 0 | 1 | 0.250 | 60.0 | 30.0 |" in report and "| 1 | 1 | 0.750 | 40.0 | 20.0 |" in report
+    assert "None: the run had no cache" in report and "Not available: tvverify did not run" in report

@@ -10,10 +10,13 @@ every metric veRL logged per step. Needs tvcache-workloads installed; --plot
 with metrics, cache_hit_rate_per_epoch.png and cache_hits_per_epoch.png (needs
 matplotlib).
 
-Hit rates are not computed here. They come from the run's metrics.json, which
-verl/stats.py writes from the lookup trace at the end of every traced run (it
-is the one place the testing plan's metrics are computed). The cache server's
-own hit counters are not used: the fork bank's lookups count as hits there.
+Each run's own report is <run>/report.md. This script puts several runs side
+by side. Hit rates are not computed here: they come from the run's
+metrics.json, which verl/stats.py writes next to report.md (it is the one
+place the testing plan's metrics are computed). The cache server's own hit
+counters are not used: the fork bank's lookups count as hits there. Given a
+run with the cache and a run with contraction, it also prints the testing
+plan's ratio table (the same one as stats.py --compare).
 """
 
 import argparse
@@ -28,7 +31,6 @@ from statistics import mean
 from tvcache_workloads.bash.cache_admin import node_children
 from tvcache_workloads.bash.verl import stats as run_stats
 
-STEP_RE = re.compile(r"\bstep:(\d+) - (.*)$")
 REQUEST_RE = re.compile(r'"(?:POST|GET) /(\w+)')
 KEY_METRICS = {
     "timing_s/step": "step time (s)",
@@ -43,24 +45,7 @@ SERIES_COLORS = {"nocache": "#4a86e8", "cache": "#cc4125"}
 WORKLOAD_TITLE = "Terminal-Bench Workload (Bash)"
 
 
-def parse_steps(verl_log: Path) -> list:
-    """One dict per training step: {"step": n, <metric>: value, ...}."""
-    steps = {}
-    for line in verl_log.read_text(errors="replace").splitlines():
-        match = STEP_RE.search(line)
-        if not match:
-            continue
-        row = {"step": int(match.group(1))}
-        for item in match.group(2).split(" - "):
-            key, sep, value = item.rpartition(":")
-            if not sep:
-                continue
-            try:
-                row[key.strip()] = float(value)
-            except ValueError:
-                row[key.strip()] = value.strip()
-        steps[row["step"]] = row  # the last line for a step wins
-    return [steps[n] for n in sorted(steps)]
+parse_steps = run_stats.parse_steps  # veRL's per-step log lines
 
 
 def count_requests(manager_log: Path) -> Counter:
@@ -139,6 +124,8 @@ def summarize(run: Path, epochs: int) -> dict:
     summary["_label"] = series_label(run)
     summary["_per_epoch"] = per_epoch(steps, epochs)
     summary["_cached"] = bool(dumps)
+    summary["_cache_mode"] = run_config(run).get("CACHE", "")
+    summary["_metrics"] = metrics
     summary["_hits_per_epoch"] = hits_per_epoch(metrics)
     return summary
 
@@ -237,13 +224,7 @@ def write_csv(path: Path, steps: list) -> None:
         writer.writerows(steps)
 
 
-def run_config(run: Path) -> dict:
-    """The settings train_pilot.sh recorded in <run>/config.env."""
-    path = run / "config.env"
-    if not path.exists():
-        return {}
-    pairs = (line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
-    return {key: value.strip("'\"") for key, value in pairs}
+run_config = run_stats.run_config  # the settings in <run>/config.env
 
 
 def series_label(run: Path) -> str:
@@ -352,13 +333,19 @@ def main() -> None:
         rows = summary["_hits_per_epoch"]
         if rows:
             print()
-            print(f"== cache hits per epoch: {summary['run']} (same numbers as metrics.md) ==")
+            print(f"== cache hits per epoch: {summary['run']} (same numbers as its report.md) ==")
             print("epoch   hits  lookups  hit-rate%")
             for r in rows:
                 print(f"{r['epoch']:5d}  {r['hits']:5d}  {r['lookups']:7d}  {100 * r['hit rate']:9.1f}")
         elif summary["_cached"]:
             print()
-            print(f"{summary['run']}: no hit rates (the run has no trace; they need tvverify on, see metrics.md)")
+            print(f"{summary['run']}: no hit rates (no trace; they need tvverify on, see its report.md)")
+    baseline = next((s for s in summaries if s["_cache_mode"] == "tvcache" and s["_metrics"]), None)
+    for summary in summaries:
+        if baseline and summary["_cache_mode"] == "contraction" and summary["_metrics"]:
+            print()
+            print(f"== {summary['run']} (method) against {baseline['run']} (baseline) ==")
+            print(run_stats.compare(baseline["_metrics"], summary["_metrics"]))
     print()
     for run in args.runs:
         print(f"per-step metrics: {run / 'steps.csv'}")
