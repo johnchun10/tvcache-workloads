@@ -346,9 +346,27 @@ def test_compare_runs_counts_merged_calls(tmp_path):
     dump = tmp_path / "dump_000.json"
     dump.write_text(json.dumps({"t": CONTRACTED}))
     stats = compare_runs.cache_stats(dump)
-    assert (stats["nodes"], stats["calls"], stats["hits"], stats["runtime_ms"]) == (3, 4, 3, 16)
+    assert (stats["nodes"], stats["calls"], stats["runtime_ms"]) == (3, 4, 16)
+    assert "hits" not in stats  # hit rates come from metrics.json, not the server's counters
     (tmp_path / "config.env").write_text("CACHE=contraction\nTHRESHOLD=0.9\nEMBEDDER=minilm\n")
     assert compare_runs.series_label(tmp_path) == "Contraction (0.9, minilm)"
+
+
+def test_compare_runs_reads_hit_rates_from_metrics_json(tmp_path):
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import compare_runs
+    finally:
+        sys.path.remove(str(SCRIPTS))
+    assert compare_runs.load_metrics(tmp_path) is None  # no metrics.json and no trace
+    assert compare_runs.hits_per_epoch(None) == []
+    (tmp_path / "metrics.json").write_text(json.dumps({"tasks": {
+        "a": {"0": {"lookups": 10, "cache_hit_rate": 0.2}, "1": {"lookups": 10, "cache_hit_rate": 0.5}},
+        "b": {"0": {"lookups": 30, "cache_hit_rate": 0.0}, "1": {"nodes": 4}},  # epoch 1: graph size only
+    }}))
+    rows = compare_runs.hits_per_epoch(compare_runs.load_metrics(tmp_path))
+    assert [(r["epoch"], r["hits"], r["lookups"]) for r in rows] == [(1, 2, 40), (2, 5, 10)]
+    assert rows[0]["hit rate"] == pytest.approx(0.05) and rows[1]["hit rate"] == pytest.approx(0.5)
 
 
 # --- the launcher ------------------------------------------------------------

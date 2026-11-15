@@ -3,11 +3,17 @@
     python compare_runs.py $TVROOT/runs/<...>-none $TVROOT/runs/<...>-tvcache $TVROOT/runs/<...>-contraction-t0.9-minilm
 
 Reads logs/verl.log (per-step metrics), logs/manager.log (container requests)
-and, when present, dumps/dump_*.json (the cache tree with hit counters). Prints
-one summary table and a per-epoch reward table, and writes <run>/steps.csv
-with every metric veRL logged per step. Needs tvcache-workloads installed; --plot <dir>
-also writes reward_per_epoch.png, step_time_per_epoch.png and, for runs with
-dumps, cache_hit_rate_over_time.png (needs matplotlib).
+and, when present, dumps/dump_*.json (the size of the cache tree). Prints one
+summary table and a per-epoch reward table, and writes <run>/steps.csv with
+every metric veRL logged per step. Needs tvcache-workloads installed; --plot
+<dir> also writes reward_per_epoch.png, step_time_per_epoch.png and, for runs
+with metrics, cache_hit_rate_per_epoch.png and cache_hits_per_epoch.png (needs
+matplotlib).
+
+Hit rates are not computed here. They come from the run's metrics.json, which
+verl/stats.py writes from the lookup trace at the end of every traced run (it
+is the one place the testing plan's metrics are computed). The cache server's
+own hit counters are not used: the fork bank's lookups count as hits there.
 """
 
 import argparse
@@ -15,15 +21,14 @@ import csv
 import json
 import re
 import sys
-from datetime import datetime
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import mean
 
 from tvcache_workloads.bash.cache_admin import node_children
+from tvcache_workloads.bash.verl import stats as run_stats
 
 STEP_RE = re.compile(r"\bstep:(\d+) - (.*)$")
-TRAIN_START_RE = re.compile(r"INFO:(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+:Total training steps")
 REQUEST_RE = re.compile(r'"(?:POST|GET) /(\w+)')
 KEY_METRICS = {
     "timing_s/step": "step time (s)",
@@ -69,7 +74,7 @@ def count_requests(manager_log: Path) -> Counter:
 
 
 def cache_stats(dump_path: Path) -> dict:
-    """Totals over every task's tree in a DumpAll file."""
+    """Size of every task's tree in a DumpAll file."""
     dump = json.loads(dump_path.read_text())
     totals = Counter()
 
@@ -77,8 +82,6 @@ def cache_stats(dump_path: Path) -> dict:
         for calls, child in node_children(node):
             totals["nodes"] += 1
             totals["calls"] += len(calls)  # more than one on a node that contraction merged
-            totals["hits"] += child.get("number_of_cache_hits", 0)
-            totals["lpm_hits"] += child.get("number_of_lpm_hits", 0)
             totals["runtime_ms"] += sum(entry.get("runtime", 0) for entry in calls.values())
             visit(child)
 
@@ -114,12 +117,16 @@ def summarize(run: Path, epochs: int) -> dict:
     if dumps:
         stats = cache_stats(dumps[-1])
         summary["cache nodes"] = stats.get("nodes", 0)
-        summary["cache hits"] = stats.get("hits", 0)
-        summary["cache lpm hits"] = stats.get("lpm_hits", 0)
-        lookups = stats.get("hits", 0) + stats.get("calls", 0)  # every cached call was one miss
-        summary["cache hit rate"] = stats.get("hits", 0) / lookups if lookups else 0.0
         summary["cache snapshots"] = stats.get("sandboxes", 0)
         summary["calls merged away"] = stats.get("calls", 0) - stats.get("nodes", 0)
+    metrics = load_metrics(run)
+    if metrics and metrics.get("tasks"):
+        totals = run_stats.totals(metrics)
+        summary["lookups"] = sum(r.get("lookups", 0) for e in metrics["tasks"].values() for r in e.values())
+        for key, label in (("cache_hit_rate", "cache hit rate"), ("new_seq_hit_rate", "new-sequence hit rate"),
+                           ("lpm_hit_rate", "lpm hit rate")):
+            if totals.get(key) is not None:
+                summary[label] = totals[key]
     contraction = run / "contraction" / "summary.json"
     if contraction.exists():
         totals = json.loads(contraction.read_text())["totals"]
@@ -131,61 +138,38 @@ def summarize(run: Path, epochs: int) -> dict:
         summary["peak memory (GB)"], summary["peak containers"] = peak
     summary["_label"] = series_label(run)
     summary["_per_epoch"] = per_epoch(steps, epochs)
-    summary["_hit_rate_over_time"] = hit_rate_over_time(run, dumps)
-    summary["_hits_per_epoch"] = hits_per_epoch(run, steps, summary["_hit_rate_over_time"], epochs)
+    summary["_cached"] = bool(dumps)
+    summary["_hits_per_epoch"] = hits_per_epoch(metrics)
     return summary
 
 
-def training_start(run: Path) -> float:
-    """Unix time of step 1: veRL's 'Total training steps' line, else tasks.parquet."""
-    for line in (run / "logs" / "verl.log").read_text(errors="replace").splitlines():
-        match = TRAIN_START_RE.search(line)
-        if match:
-            return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
-    return (run / "tasks.parquet").stat().st_mtime
+def load_metrics(run: Path):
+    """The run's metrics from verl/stats.py: metrics.json, or computed from the
+    trace when the file is not there yet. None for a run without a trace."""
+    path = run / "metrics.json"
+    if path.exists():
+        return json.loads(path.read_text())
+    if (run / "trace").is_dir() and any((run / "trace").glob("trace-*.jsonl")):
+        return json.loads(json.dumps(run_stats.run_metrics(run), default=list))  # same shape as the file
+    return None
 
 
-def interpolate(points: list, x: float) -> float:
-    """Piecewise-linear value at x over [(x, y), ...]; 0 before the first point."""
-    if not points or x <= points[0][0]:
-        return 0.0 if not points or x < points[0][0] else points[0][1]
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        if x0 <= x <= x1:
-            return y0 + (y1 - y0) * (x - x0) / (x1 - x0) if x1 > x0 else y1
-    return points[-1][1]
-
-
-def hits_per_epoch(run: Path, steps: list, over_time: list, epochs: int) -> list:
-    """Hits and hit rate within each epoch, from the dumps nearest its end.
-
-    Epoch k ends at training start + the sum of timing_s/step through its last
-    step; counters at that moment are interpolated between the two dumps
-    around it (dumps are 10 min apart, an epoch is about 50 min)."""
-    if not over_time:
+def hits_per_epoch(metrics) -> list:
+    """Lookups, hits and hit rate per epoch over all tasks, from metrics.json.
+    Epochs are numbered from 1 here, as in the reward table."""
+    if not metrics:
         return []
-    t0 = training_start(run)
-    dump_t0 = (run / "tasks.parquet").stat().st_mtime if (run / "tasks.parquet").exists() else t0
-    hits_pts = [(dump_t0 + r["minutes"] * 60, r["hits"]) for r in over_time]
-    nodes_pts = [(dump_t0 + r["minutes"] * 60, r["nodes"]) for r in over_time]
-    per = max(1, len(steps) // epochs)
-    rows, elapsed, prev_hits, prev_nodes = [], 0.0, 0.0, 0.0
-    for e in range(epochs):
-        chunk = steps[e * per : (e + 1) * per] if e < epochs - 1 else steps[e * per :]
-        if not chunk:
-            break
-        elapsed += sum(s.get("timing_s/step", 0) for s in chunk)
-        hits = interpolate(hits_pts, t0 + elapsed)
-        nodes = interpolate(nodes_pts, t0 + elapsed)
-        d_hits, d_nodes = hits - prev_hits, nodes - prev_nodes
-        rows.append({
-            "epoch": e + 1,
-            "hits": round(d_hits),
-            "lookups": round(d_hits + d_nodes),
-            "hit rate": d_hits / (d_hits + d_nodes) if d_hits + d_nodes > 0 else 0.0,
-            "end (min)": elapsed / 60,
-        })
-        prev_hits, prev_nodes = hits, nodes
-    return rows
+    per = defaultdict(lambda: [0, 0.0])  # epoch -> [lookups, hits]
+    for epochs in metrics.get("tasks", {}).values():
+        for epoch, row in epochs.items():
+            lookups = row.get("lookups", 0)
+            per[int(epoch)][0] += lookups
+            per[int(epoch)][1] += (row.get("cache_hit_rate") or 0.0) * lookups
+    return [
+        {"epoch": epoch + 1, "hits": round(hits), "lookups": lookups, "hit rate": hits / lookups if lookups else 0.0}
+        for epoch, (lookups, hits) in sorted(per.items())
+        if lookups
+    ]
 
 
 def plot_hits_per_epoch(summaries: list, out_dir: Path) -> list:
@@ -224,62 +208,6 @@ def plot_hits_per_epoch(summaries: list, out_dir: Path) -> list:
             fig.savefig(path)
             plt.close(fig)
             paths.append(path)
-    return paths
-
-
-def hit_rate_over_time(run: Path, dumps: list) -> list:
-    """Cumulative and per-window hit rate at each dump; minutes since the run started."""
-    if not dumps:
-        return []
-    marker = run / "tasks.parquet"  # written just before veRL starts
-    t0 = marker.stat().st_mtime if marker.exists() else dumps[0].stat().st_mtime
-    rows, prev_hits, prev_nodes = [], 0, 0
-    for dump in dumps:
-        stats = cache_stats(dump)
-        hits, nodes = stats.get("hits", 0), stats.get("calls", 0)  # cached calls = misses so far
-        lookups = hits + nodes
-        d_hits, d_nodes = hits - prev_hits, nodes - prev_nodes
-        rows.append({
-            "minutes": (dump.stat().st_mtime - t0) / 60,
-            "cumulative": hits / lookups if lookups else 0.0,
-            "window": d_hits / (d_hits + d_nodes) if d_hits + d_nodes > 0 else float("nan"),
-            "hits": hits,
-            "nodes": nodes,
-        })
-        prev_hits, prev_nodes = hits, nodes
-    return rows
-
-
-def plot_hit_rate(summaries: list, out_dir: Path) -> list:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    paths = []
-    for summary in summaries:
-        rows = summary["_hit_rate_over_time"]
-        if not rows:
-            continue
-        fig, ax = plt.subplots(figsize=(7, 4.2), dpi=150)
-        xs = [r["minutes"] for r in rows]
-        ax.plot(xs, [100 * r["cumulative"] for r in rows], color=SERIES_COLORS["cache"],
-                linewidth=2, marker="o", markersize=5, label="Cumulative")
-        ax.plot(xs, [100 * r["window"] for r in rows], color=SERIES_COLORS["nocache"],
-                linewidth=2, linestyle="--", marker="o", markersize=5, label="Last 10 min")
-        ax.set_title(f"Cache Hit Rate on {WORKLOAD_TITLE}", fontsize=13, pad=12)
-        ax.set_xlabel("Minutes of training")
-        ax.set_ylabel("Hit rate (%)")
-        ax.set_ylim(0, 100)
-        ax.grid(True, color="#e5e5e5", linewidth=0.8)
-        for side in ("top", "right"):
-            ax.spines[side].set_visible(False)
-        ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=2, frameon=False, fontsize=9)
-        fig.tight_layout()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"cache_hit_rate_over_time{'' if len(summaries) == 1 else '-' + summary['run']}.png"
-        fig.savefig(path)
-        plt.close(fig)
-        paths.append(path)
     return paths
 
 
@@ -421,21 +349,16 @@ def main() -> None:
         print(str(i + 1).ljust(6) + "".join(cells))
     print()
     for summary in summaries:
-        rows = summary["_hit_rate_over_time"]
-        if rows:
-            print()
-            print(f"== cache hit rate over time: {summary['run']} ==")
-            print("minutes  cumulative%  last-window%  hits  nodes")
-            for r in rows:
-                print(f"{r['minutes']:7.1f}  {100 * r['cumulative']:10.1f}  {100 * r['window']:12.1f}  {r['hits']:4d}  {r['nodes']:5d}")
-    for summary in summaries:
         rows = summary["_hits_per_epoch"]
         if rows:
             print()
-            print(f"== cache hits per epoch: {summary['run']} ==")
-            print("epoch  hits  lookups  hit-rate%  ends-at-min")
+            print(f"== cache hits per epoch: {summary['run']} (same numbers as metrics.md) ==")
+            print("epoch   hits  lookups  hit-rate%")
             for r in rows:
-                print(f"{r['epoch']:5d}  {r['hits']:4d}  {r['lookups']:7d}  {100 * r['hit rate']:9.1f}  {r['end (min)']:11.1f}")
+                print(f"{r['epoch']:5d}  {r['hits']:5d}  {r['lookups']:7d}  {100 * r['hit rate']:9.1f}")
+        elif summary["_cached"]:
+            print()
+            print(f"{summary['run']}: no hit rates (the run has no trace; they need tvverify on, see metrics.md)")
     print()
     for run in args.runs:
         print(f"per-step metrics: {run / 'steps.csv'}")
@@ -443,7 +366,7 @@ def main() -> None:
         try:
             print("chart:", plot_per_epoch(summaries, args.plot, "reward", "Mean Reward", "Mean Reward", "reward_per_epoch.png"))
             print("chart:", plot_per_epoch(summaries, args.plot, "step time (s)", "Mean Step Time (s)", "Mean Step Time", "step_time_per_epoch.png"))
-            for path in plot_hit_rate(summaries, args.plot) + plot_hits_per_epoch(summaries, args.plot):
+            for path in plot_hits_per_epoch(summaries, args.plot):
                 print("chart:", path)
         except ImportError:
             print("charts skipped: matplotlib is not installed (pip install matplotlib)", file=sys.stderr)
