@@ -73,7 +73,7 @@ async def main() -> int:
                         help="fixed snapshot threshold in seconds; omit for tvclient's adaptive policy")
     parser.add_argument("--command-timeout", type=float, default=120.0)
     parser.add_argument("--snapshot-mode", choices=["cold", "parked"], default="cold",
-                        help="cold needs the manager's cold-snapshots branch; parked works with any manager")
+                        help="cold needs our fork of the manager (main); parked works with any manager")
     parser.add_argument("--keep-snapshots", action="store_true",
                         help="keep the snapshots after the run instead of deleting them")
     parser.add_argument("--output", type=Path, default=None, help="write per-step JSON results here")

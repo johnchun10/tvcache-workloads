@@ -8,9 +8,13 @@
 #   bash run.sh shakedown --prebuild                        # login node: only build the task images
 #   bash run.sh shakedown --dry-run                         # print the settings and stop
 #
-# Presets are the files in presets/ (shakedown, main20-easy-med). Inside a GPU
-# allocation, e.g.
-#   sbatch -q shared -C gpu -G 2 -c 64 -t 08:00:00 -A <project> --wrap "bash run.sh main20-easy-med"
+# Presets are the files in presets/ (shakedown, main20-easy-med). For a real
+# run, queue the two-node job from a login node; it calls this script on each
+# node:
+#   bash submit_hetjob.sh main20-easy-med [flags]
+# Called directly inside a GPU allocation, this script runs everything on that
+# one node, e.g.
+#   sbatch -q shared -C gpu -G 2 -c 64 -t 02:00:00 -A <project> --wrap "bash run.sh shakedown"
 #
 # Flags:
 #   --cache none|tvcache|contraction   no cache / TVCache / TVCache with graph contraction

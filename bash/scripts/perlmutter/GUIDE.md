@@ -3,15 +3,18 @@
 A step-by-step guide, from a new NERSC account to a finished training run
 with a tvverify report. `README.md` in this directory is the short
 reference; `ISSUES.md` has the history of what broke during bring-up.
-Sections 1 to 4 and 6 were done for real on 2026-11-02/03. The `run.sh`
-flow in sections 5, 7 and 8 was rehearsed off Perlmutter and had not yet
-run there when this was written.
+Sections 1 to 4 and 6 were done for real on 2026-11-02/03. The flow in
+sections 5, 7 and 8 (`run.sh`, the two-node job, graph contraction) was
+rehearsed off Perlmutter and had not yet run there in its current form when
+this was written; the shakedown in section 7 is its first real test.
 
 What runs: GRPO training with veRL 0.9.1 on Terminal-Bench tasks,
 Qwen2.5-1.5B-Instruct, with every bash command going through TVCache,
 TVCache with graph contraction, or no cache. Afterwards `tvverify
-check-graph` checks the cache the run built. Everything (cache server,
-container manager, containers, veRL) runs on a single node.
+check-graph` checks the cache the run built, and the run's `report.md` has
+the outcome, the testing plan's metrics and tvverify's findings in one file. A run is one job on two nodes: a CPU node for the containers,
+cache server, container manager, fork bank and contraction, and a GPU node
+for veRL. It can also run on a single GPU node.
 
 ---
 
@@ -20,13 +23,9 @@ container manager, containers, veRL) runs on a single node.
 - A NERSC account with MFA set up, and a project with GPU hours (we used
   `m4999`). Replace `<user>` and `<project>` below.
 - Nothing on your laptop: the code is cloned from git on Perlmutter itself.
-  `bootstrap.sh` uses these branches of the `johnchun10` forks:
-
-  | Repo | Branch |
-  |---|---|
-  | `tvcache-workloads` | `contraction-runs` |
-  | `container-manager-public` | `main` |
-  | `tvclient`, `tvcache-rust` | `contraction-plus-fixes` |
+  `bootstrap.sh` clones `main` of the four `johnchun10` forks
+  (`tvcache-workloads`, `container-manager-public`, `tvclient`,
+  `tvcache-rust`). No other branch is needed.
 
 ## 1. Log in from your laptop
 
@@ -55,14 +54,14 @@ Check: `ssh perlmutter 'echo $SCRATCH'` prints `/pscratch/sd/<x>/<user>`.
 
 On a Perlmutter login node:
 
-    git clone -b contraction-runs https://github.com/johnchun10/tvcache-workloads.git $SCRATCH/tvcache/tvcache-workloads
+    git clone https://github.com/johnchun10/tvcache-workloads.git $SCRATCH/tvcache/tvcache-workloads
     bash $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter/bootstrap.sh
 
 This puts everything under `$SCRATCH/tvcache`:
 
     $SCRATCH/tvcache/
       tvcache-workloads/          container-manager-public/
-      variants/combined/{tvclient,tvcache-rust}   # contraction plus the correctness fixes
+      variants/combined/{tvclient,tvcache-rust}   # main: contraction, the correctness fixes, the fork bank
 
 Run `bootstrap.sh` again to pick up new commits, then `setup.sh` again.
 Runs live in `$SCRATCH/tvcache/runs`.
@@ -151,54 +150,75 @@ compute node.
 Expect contract 11/11 (1 skip), cache PASS, replay PASS, and no leftover
 containers or snapshot images.
 
-## 7. Shakedown (GPU)
+## 7. Shakedown
 
-One easy and one medium task, small settings, contraction on: checks that
-every part runs before the long runs.
+One easy and one medium task, small settings, contraction and the fork bank
+on: checks that every part runs before the long runs. From a login node:
 
     cd $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter
-    mkdir -p $SCRATCH/tvcache/runs/slurm
+    sbatch -o $SCRATCH/tvcache/runs/slurm/%x-%j.out probe_hetjob.sbatch   # optional, 10 min: do the two nodes start and reach each other?
+    bash submit_hetjob.sh shakedown
+
+`submit_hetjob.sh` prints the job id and the run directory. The account and
+QOS are the `#SBATCH -A ... -q ...` lines in `hetjob.sbatch`; edit them for
+another project. Afterwards read, in the run directory:
+
+- `report.md`: the one report. Settings, veRL's exit code, peak memory and
+  leftovers; reward and step time per epoch; hit rates, graph sizes and
+  contraction rounds per epoch; tvverify's findings;
+- `logs/run.txt`, `server.out`, `client.out`: the run's log and each node's
+  output, if something failed.
+
+The same shakedown on one GPU node, if the two-node job does not start:
+
     sbatch -q shared -C gpu -G 2 -c 64 -t 02:00:00 -A <project> -J tv-shakedown \
       -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "bash run.sh shakedown"
 
-Read `$RUN/logs/run.txt` afterwards: the state check's verdict per task,
-veRL's exit code, peak memory, the contraction totals, and leftover
-snapshots. `--mode sample` runs rollouts only, with no training.
+## 8. The evaluation runs
 
-## 8. The evaluation runs (GPU)
+The same preset three ways, in one job, each mode with an empty cache:
 
-The same preset three ways, then the contraction settings:
+    CACHES="none tvcache contraction" TIME=<hh:mm:ss> bash submit_hetjob.sh main20-easy-med
 
-    sbatch ... -t 08:00:00 -J tv-none     --wrap "bash run.sh main20-easy-med --cache none"
-    sbatch ... -t 08:00:00 -J tv-tvcache  --wrap "bash run.sh main20-easy-med --cache tvcache"
-    sbatch ... -t 08:00:00 -J tv-contract --wrap "bash run.sh main20-easy-med --cache contraction --threshold 0.9 --embedder minilm"
+or one job per mode (`bash submit_hetjob.sh main20-easy-med --cache tvcache`).
+Then the contraction settings:
+
+    bash submit_hetjob.sh main20-easy-med --threshold 0.95 --embedder jina-code
 
 - `none` runs every command in the rollout's own container: no cache server,
-  dumps or tvverify. The baseline.
-- `tvcache` is the cache without contraction.
+  dumps or tvverify; its `report.md` has only the outcome and the training
+  part. The baseline for reward and step time.
+- `tvcache` is the cache without contraction. The baseline for the testing
+  plan's ratios.
 - `contraction` adds embeddings, the per-task state check and the contraction
   coordinator. Sweep `--threshold` (0.8, 0.9, 0.95) and `--embedder` (`minilm`,
   `jina-code`).
 
-Use **half a node** (`-G 2 -c 64`, about 120 GB RAM) even though veRL uses
-one GPU: a quarter node ran out of memory (FAQ). `sbatch` on the `shared`
-QoS keeps running if your SSH drops.
+With both `tvcache` and `contraction` in `CACHES`, the job writes the testing
+plan's ratio table to `<run>-compare.md`.
+
+Each node gets a whole node's memory. On a single GPU node the 49-task pilot
+needed the whole node (`-N 1 -G 4 -c 128 --mem=0`); a quarter and a half node
+ran out of memory (FAQ).
 
 **While it runs:**
 
     squeue --me
-    tail -f $SCRATCH/tvcache/runs/slurm/tv-*-<jobid>.out
+    tail -f $SCRATCH/tvcache/runs/slurm/tv-het-*-<jobid>.out
     RUN=$(ls -td $SCRATCH/tvcache/runs/*-main20-* | head -1)
-    tail -3 $RUN/logs/memory.csv            # memory once a minute; should stay well under 120 GB
+    tail -3 $RUN/logs/memory.csv            # memory once a minute
     tail -3 $RUN/contraction/events.jsonl   # contraction runs only
 
-**Resume** after a timeout: resubmit with the same `RUN=<path>`. Checkpoints
-are saved every 10 steps; the cache restarts empty.
+**Long runs:** `SPLIT=30 TOTAL=<steps> bash submit_hetjob.sh main20-easy-med`
+trains in parts of 30 steps, one job per part, each resuming from the previous
+part's checkpoint. Each part has its own run directory and starts with an
+empty cache.
 
 ## 9. What a run leaves in `$RUN`
 
-`README.md` has the full table. Start with `logs/run.txt` (settings and
-outcome) and `report.md` (tvverify). Compare runs with
+`README.md` has the full table. Read `report.md`: it has the settings and
+outcome, training per epoch, the testing plan's metrics and tvverify's
+findings. Put runs side by side, including one without a cache, with
 
     $VERL_PY compare_runs.py $TVROOT/runs/<a> $TVROOT/runs/<b> ... --plot charts/
 
@@ -214,7 +234,10 @@ Everything else comes from the environment:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TVCACHE_VARIANT` | `combined` | which build under `variants/` to use |
+| `TVCACHE_VARIANT` | `combined` | which build under `variants/` to use (`bootstrap.sh` clones only `combined`) |
+| `FORK_BANK` | 1 | prewarming; 0 turns it off, and the cache metrics in `report.md` are then not split by epoch |
+| `TOP_K` | 10 | fork bank: most used snapshots kept restored |
+| `SEED` | 42 | the dataloader's shuffle |
 | `N_GPUS` | 1 | GPUs veRL uses |
 | `SNAPSHOT_THRESHOLD` | `1.0` | fixed snapshot threshold in seconds; empty = tvclient's adaptive policy (rarely snapshots) |
 | `CHECK_NODES` | 20 | tvverify nodes replayed per task |
@@ -224,7 +247,7 @@ Everything else comes from the environment:
 | `RUN` | `runs/<time>-<preset>-<cache mode>` | output directory; reuse to resume |
 | `VERL_PY` | `$TVROOT/verl-env/bin/python` | Python with veRL, vLLM, tvclient, tvverify |
 | `CONTAINER_CLI` / `COMPOSE_CMD` / `DOCKER_HOST` | `podman-hpc` / `~/bin/docker-compose` / podman socket | container runtime used by the manager |
-| `TVCACHE_PORT` / `FLASK_PORT` / `TVCACHE_CONTRACTION_PORT` | 7878 / 9901 / 7879 | cache server, manager, contraction coordinator |
+| `TVCACHE_PORT` / `FLASK_PORT` / `TVCACHE_CONTRACTION_PORT` / `TVCACHE_CONTROL_PORT` | 7878 / 9901 / 7879 / 7880 | cache server, manager, contraction coordinator, fork bank |
 
 ## 11. Budget
 
@@ -234,8 +257,10 @@ Everything else comes from the environment:
 | Compute-node probe | ~0.05 node-hours |
 | Sampling test, half node | ~0.5–1 |
 | One run of the original 49-task pilot, half node, 4.5–5 h | ~2.5 |
+| Two-node shakedown, 2 tasks (an earlier version of the job) | ~0.8 |
 
-A `main20-easy-med` run has not been timed yet; expect the same order. Check
+A `main20-easy-med` run has not been timed yet. The two-node job is charged
+for both nodes; it gives the GPU node back as soon as training ends. Check
 usage with `sshare -A <project>` or Iris.
 
 ---
@@ -302,10 +327,11 @@ affected.
 
 **Slurm `OUT_OF_MEMORY` after ~50 min (MaxRSS ~57 GB).** On GPU nodes
 podman's image store is `/tmp`, a RAM disk that counts against the job's
-memory, and every task image plus snapshots lands there. Use half a node
-(`-G 2 -c 64`). Watch `logs/memory.csv`; if it still climbs toward the
-limit, raise `SNAPSHOT_THRESHOLD` (fewer snapshot images) or run fewer
-tasks.
+memory, and every task image plus snapshots lands there. A half node
+(`-G 2 -c 64`, 112 GB) ran out too in training (ISSUES.md #17). Use the
+two-node job, which keeps the containers on the CPU node, or a whole GPU
+node. Watch `logs/memory.csv`; if it still climbs toward the limit, raise
+`SNAPSHOT_THRESHOLD` (fewer snapshot images) or run fewer tasks.
 
 **`podman-hpc --version` fails.** It has no such flag; use
 `podman-hpc version`.

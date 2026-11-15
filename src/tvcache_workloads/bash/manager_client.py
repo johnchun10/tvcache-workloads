@@ -13,7 +13,7 @@ by reading the source and calling a live server:
     POST /stop           {"id"}                                  -> 200 {"status": "stopped"}
                                                                     500 for an unknown id
 
-Cold snapshots (cold-snapshots branch of our container-manager-public fork):
+Cold snapshots (main of our container-manager-public fork):
 
     POST /snapshot         {"id"}           -> 200 {"snapshot_id"}; 404 unknown terminal
     POST /restore          {"snapshot_id"}  -> 200 {"id"} (a new running terminal)

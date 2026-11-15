@@ -3,7 +3,7 @@ containers for the existing Terminal-Bench task "hello-world". Nothing mocked.
 
 Run: uv run pytest -m e2e -s
 Needs both services running (bash/README.md) with ENABLE_CACHING=1 on the
-manager, which must be on the cold-snapshots branch for the "cold" cases.
+manager, which must be our fork's main for the "cold" cases.
 Takes a few minutes; creates and removes containers and images.
 """
 

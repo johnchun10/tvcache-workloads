@@ -1,4 +1,11 @@
-"""The testing plan's metrics for one training run, from what the run wrote:
+"""The report for one training run: its settings and outcome, training per
+epoch, the testing plan's metrics and tvverify's findings, in one file. It is
+the one place these numbers are computed (compare_runs.py reads its output).
+Built from what the run wrote:
+
+    $RUN/config.env, logs/run.txt the settings and the outcome lines
+    $RUN/logs/verl.log            reward and timings per training step
+    $RUN/check/report.md          tvverify's report, when tvverify ran
 
     $RUN/trace/trace-*.jsonl      every lookup/resume/execution (TraceRecorder)
     $RUN/trace/rollouts-*.jsonl   one line per trajectory (agent_loop.py)
@@ -8,7 +15,7 @@
     $RUN/logs/manager.log         snapshot sizes ("Snapshot snap_.. took ..s, N bytes")
     $RUN/logs/memory.csv          job memory, containers and sandboxes once a minute
 
-    python -m tvcache_workloads.bash.verl.stats $RUN           # -> $RUN/metrics.{json,md}
+    python -m tvcache_workloads.bash.verl.stats $RUN           # -> $RUN/report.md, $RUN/metrics.json
     python -m tvcache_workloads.bash.verl.stats --compare $BASELINE_RUN $METHOD_RUN
 
 Standard library only. A lookup belongs to the epoch of the last step that
@@ -29,6 +36,13 @@ from typing import Dict, Iterable, List, Optional
 NAMESPACE_SEPARATOR = "::"
 TEST_KEY_MARK = "TV_CACHE_TOOL_TYPE"
 SNAPSHOT_LINE = re.compile(r"Snapshot (snap_[0-9a-f]+) of \S+ took [\d.]+s, (\d+) bytes")
+STEP_RE = re.compile(r"\bstep:(\d+) - (.*)$")
+REPORT_TITLE = "# Run report: "
+# Lines of logs/run.txt that say how the run ended.
+OUTCOME_PREFIXES = ("veRL exited", "peak memory", "snapshot images left", "containers left", "metrics:",
+                    "fork bank: off", "no cache:", "tvverify: skipped", "state check:")
+SETTINGS = ("PRESET", "MODE", "CACHE", "THRESHOLD", "EMBEDDER", "BUDGET", "FORK_BANK", "TOP_K", "EPOCHS",
+            "ROLLOUTS", "BATCH", "MAX_TOKENS", "MAX_TURNS", "SEED", "VERIFY", "TVCACHE_SNAPSHOT_THRESHOLD")
 
 
 def read_jsonl(paths: Iterable[Path]) -> List[dict]:
@@ -84,6 +98,80 @@ def depth(node: dict) -> int:
 
 def ratio(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
     return None if numerator is None or not denominator else numerator / denominator
+
+
+def parse_steps(verl_log: Path) -> List[dict]:
+    """One dict per training step from veRL's log: {"step": n, <metric>: value, ...}."""
+    steps = {}
+    for line in verl_log.read_text(errors="replace").splitlines():
+        match = STEP_RE.search(line)
+        if not match:
+            continue
+        row = {"step": int(match.group(1))}
+        for item in match.group(2).split(" - "):
+            key, sep, value = item.rpartition(":")
+            if not sep:
+                continue
+            try:
+                row[key.strip()] = float(value)
+            except ValueError:
+                row[key.strip()] = value.strip()
+        steps[row["step"]] = row  # the last line for a step wins
+    return [steps[n] for n in sorted(steps)]
+
+
+def run_config(run: Path) -> Dict[str, str]:
+    """The settings train_pilot.sh recorded in <run>/config.env."""
+    path = run / "config.env"
+    if not path.exists():
+        return {}
+    pairs = (line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
+    return {key: value.strip("'\"").replace("\\ ", " ") for key, value in pairs}
+
+
+def outcome_lines(run: Path) -> List[str]:
+    path = run / "logs" / "run.txt"
+    if not path.exists():
+        return []
+    lines = [line.strip() for line in path.read_text(errors="replace").splitlines()]
+    return list(dict.fromkeys(line for line in lines if line.startswith(OUTCOME_PREFIXES)))
+
+
+def training(run: Path, control: List[dict], config: Dict[str, str]) -> dict:
+    """Steps, minutes, and mean reward and timings per epoch, from veRL's log.
+    A step's epoch comes from control.jsonl; without it, steps are split evenly
+    over the configured epochs."""
+    log = run / "logs" / "verl.log"
+    steps = parse_steps(log) if log.exists() else []
+    if not steps:
+        return {"steps": 0, "minutes": 0.0, "per_epoch": []}
+    epoch_of = {e["step"]: e["epoch"] for e in control if e["event"] == "begin"}
+    if not epoch_of:
+        try:
+            epochs = max(1, int(config.get("EPOCHS") or 1))
+        except ValueError:
+            epochs = 1
+        per = max(1, len(steps) // epochs)
+        epoch_of = {s["step"]: min(i // per, epochs - 1) for i, s in enumerate(steps)}
+    groups: Dict[int, List[dict]] = defaultdict(list)
+    last = min(epoch_of.values())
+    for step in steps:
+        last = epoch_of.get(step["step"], last)
+        groups[last].append(step)
+
+    def mean_of(chunk, key):
+        values = [s[key] for s in chunk if isinstance(s.get(key), float)]
+        return statistics.mean(values) if values else None
+
+    return {
+        "steps": len(steps),
+        "minutes": sum(s["timing_s/step"] for s in steps if isinstance(s.get("timing_s/step"), float)) / 60,
+        "per_epoch": [
+            {"epoch": epoch, "steps": len(chunk), "reward": mean_of(chunk, "critic/score/mean"),
+             "step_time_s": mean_of(chunk, "timing_s/step"), "rollout_time_s": mean_of(chunk, "timing_s/gen")}
+            for epoch, chunk in sorted(groups.items())
+        ],
+    }
 
 
 def run_metrics(run: Path) -> dict:
@@ -231,8 +319,12 @@ def run_metrics(run: Path) -> dict:
 
     takes = sum(e["event"] == "take" for e in control)
     warms = [e for e in control if e["event"] == "warm"]
+    config = run_config(run)
     return {
         "run": str(run),
+        "config": config,
+        "outcome": outcome_lines(run),
+        "training": training(run, control, config),
         "tasks": tasks,
         "rounds": round_rows,
         "live_sandboxes": live,
@@ -312,21 +404,54 @@ def fmt(value) -> str:
 
 
 def to_markdown(metrics: dict) -> str:
-    out = [f"# Metrics: {metrics['run']}", ""]
+    """The run's one report: settings and outcome, training, cache metrics,
+    contraction rounds, live sandboxes, and tvverify's report."""
+    run = Path(metrics["run"])
+    out = [f"{REPORT_TITLE}{run.name}", ""]
+
+    config = metrics.get("config") or {}
+    out += ["## Run", ""]
+    if config:
+        out += ["| setting | value |", "|---|---|"]
+        out += [f"| {key} | {config[key]} |" for key in SETTINGS if config.get(key) not in (None, "")]
+        if config.get("TASK_NAMES"):
+            names = config["TASK_NAMES"].split()
+            out.append(f"| tasks | {len(names)}: {' '.join(names)} |")
+        out.append("")
+    out += [f"- {line}" for line in metrics.get("outcome") or []] or ["No outcome lines in logs/run.txt."]
+    out.append("")
+
+    train = metrics.get("training") or {}
+    out += ["## Training", ""]
+    if train.get("per_epoch"):
+        out += [f"{train['steps']} steps, {fmt(train['minutes'])} minutes of step time.", "",
+                "| epoch | steps | mean reward | mean step time (s) | mean rollout time (s) |",
+                "|---|---|---|---|---|"]
+        out += [f"| {r['epoch']} | {r['steps']} | {fmt(r['reward'])} | {fmt(r['step_time_s'])} | "
+                f"{fmt(r['rollout_time_s'])} |" for r in train["per_epoch"]]
+    else:
+        out.append("No training steps in logs/verl.log.")
+    out.append("")
+
     cols = ["lookups", "cache_hit_rate", "new_seq_hit_rate", "lpm_hit_rate", "new_prefix_lpm_hit_rate",
             "lpm_time_saved_pct", "median_call_s", "nodes", "snapshots", "snapshot_bytes",
             "graph_depth", "merged_nodes_in_graph", "rollouts", "length_truncated", "turn_capped", "passed"]
-    out += ["## Per task, per epoch", "", "| task | epoch | " + " | ".join(cols) + " |",
-            "|---|---|" + "---|" * len(cols)]
-    for task, epochs in metrics["tasks"].items():
-        for epoch, row in sorted(epochs.items(), key=lambda kv: int(kv[0])):
-            out.append(f"| {task} | {epoch} | " + " | ".join(fmt(row.get(c)) for c in cols) + " |")
-    out += ["", "Resume sources and fork-bank use per task/epoch:", ""]
-    for task, epochs in metrics["tasks"].items():
-        for epoch, row in sorted(epochs.items(), key=lambda kv: int(kv[0])):
-            out.append(f"- {task} e{epoch}: resumes {row.get('resumes')}, from bank {row.get('from_bank')}, "
-                       f"executed {row.get('executed_calls')} calls / {row.get('executed_s')} s, "
-                       f"LPM saved-time calls without a known runtime: {row.get('lpm_saved_unknown_calls')}")
+    out += ["## Cache metrics per task, per epoch", ""]
+    if metrics["tasks"]:
+        out += ["| task | epoch | " + " | ".join(cols) + " |", "|---|---|" + "---|" * len(cols)]
+        for task, epochs in metrics["tasks"].items():
+            for epoch, row in sorted(epochs.items(), key=lambda kv: int(kv[0])):
+                out.append(f"| {task} | {epoch} | " + " | ".join(fmt(row.get(c)) for c in cols) + " |")
+        out += ["", "Resume sources and fork-bank use per task/epoch:", ""]
+        for task, epochs in metrics["tasks"].items():
+            for epoch, row in sorted(epochs.items(), key=lambda kv: int(kv[0])):
+                out.append(
+                    f"- {task} e{epoch}: resumes {row.get('resumes')}, from bank {row.get('from_bank')}, "
+                    f"executed {row.get('executed_calls')} calls / {row.get('executed_s')} s, "
+                    f"LPM saved-time calls without a known runtime: {row.get('lpm_saved_unknown_calls')}"
+                )
+    else:
+        out.append("None: the run had no cache, or no trace and no epoch dumps.")
     if metrics["rounds"]:
         rcols = list(metrics["rounds"][0].keys())
         out += ["", "## [M] Contraction rounds", "", "| " + " | ".join(rcols) + " |", "|" + "---|" * len(rcols)]
@@ -334,6 +459,15 @@ def to_markdown(metrics: dict) -> str:
             out.append("| " + " | ".join(fmt(r[c]) for c in rcols) + " |")
     out += ["", "## Live sandboxes", "", f"{metrics['live_summary']}", ""]
     out += ["Fork bank: " + json.dumps(metrics["fork_bank"]), ""]
+
+    out += ["## Correctness (tvverify)", ""]
+    tvverify = run / "check" / "report.md"
+    if tvverify.exists():
+        # its headings go two levels down, under this section
+        out += [("##" + line if line.startswith("#") else line) for line in tvverify.read_text().splitlines()]
+    else:
+        out.append("Not available: tvverify did not run, or has not finished.")
+    out.append("")
     return "\n".join(out)
 
 
@@ -402,11 +536,22 @@ def main(argv=None) -> None:
         print(compare(*(run_metrics(run) for run in args.runs)))
         return
     for run in args.runs:
-        metrics = run_metrics(run)
-        (run / "metrics.json").write_text(json.dumps(metrics, indent=1, default=list))
-        markdown = to_markdown(metrics)
-        (run / "metrics.md").write_text(markdown)
-        print(markdown)
+        write_report(run)
+
+
+def write_report(run: Path) -> None:
+    """Writes <run>/report.md and <run>/metrics.json."""
+    report = run / "report.md"
+    # A run from before this report existed has tvverify's own report here.
+    tvverify = run / "check" / "report.md"
+    if report.exists() and not report.read_text().startswith(REPORT_TITLE) and not tvverify.exists():
+        tvverify.parent.mkdir(exist_ok=True)
+        report.rename(tvverify)
+    metrics = run_metrics(run)
+    (run / "metrics.json").write_text(json.dumps(metrics, indent=1, default=list))
+    markdown = to_markdown(metrics)
+    report.write_text(markdown)
+    print(markdown)
 
 
 if __name__ == "__main__":

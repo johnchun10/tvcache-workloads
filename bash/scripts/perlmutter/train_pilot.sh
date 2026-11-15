@@ -12,11 +12,13 @@
 #   CACHE=none ...                    # no cache at all: the with/without baseline
 #   CACHE=contraction THRESHOLD=0.9 EMBEDDER=minilm ...
 #
-# Run it inside an allocation, e.g.
-#   sbatch -q shared -C gpu -G 2 -c 64 -t 08:00:00 -A <project> --wrap "bash run.sh main20-easy-med"
-# Half a node for its RAM (about 120 GB): podman's image store on GPU nodes is
-# /tmp, a RAM disk, and a quarter node ran out of memory (ISSUES.md #16).
-# veRL still uses one GPU (N_GPUS). Results land in $RUN.
+# Real runs are queued with submit_hetjob.sh (two nodes, ROLE=server and
+# ROLE=client below). On one node, run it inside a GPU allocation, e.g.
+#   sbatch -q shared -C gpu -G 2 -c 64 -t 02:00:00 -A <project> --wrap "bash run.sh shakedown"
+# Mind the memory there: podman's image store on GPU nodes is /tmp, a RAM
+# disk, and the 49-task pilot ran out of memory on a quarter and on a half
+# node (ISSUES.md #16, #17). veRL still uses one GPU (N_GPUS). Results land
+# in $RUN.
 #
 # ROLE picks what runs on this node:
 #   all     everything on one GPU node (cache server, manager, containers,
@@ -70,6 +72,9 @@ if [[ "$VERIFY" == 1 && "$TVCACHE_USE_CACHE" == 1 && -f "$(variant_dir)/tvclient
   export TVCACHE_TRACE_DIR="$RUN/trace"
 else
   export TVCACHE_TRACE_DIR=""
+  if [[ "$TVCACHE_USE_CACHE" == 1 && "$MODE" == train && "$ROLE" != client ]]; then
+    echo "metrics: no trace (tvverify is off), so report.md will have no hit rates or call times" | tee -a "$RUN/logs/run.txt"
+  fi
 fi
 if [[ "$CACHE" == contraction && ! -f "$(variant_dir)/tvclient/tvclient/contraction.py" ]]; then
   echo "CACHE=contraction needs a tvclient with contraction; $(variant_dir)/tvclient has none (use TVCACHE_VARIANT=combined)" >&2
@@ -84,6 +89,9 @@ if [[ "$TVCACHE_USE_CACHE" != 1 || "$MODE" != train ]]; then
 elif [[ "$FORK_BANK" == 1 ]] && ! grep -q "def set_tasks" "$(variant_dir)/tvclient/tvclient/fork_bank.py" 2>/dev/null; then
   echo "fork bank: off ($(variant_dir)/tvclient has no ForkBank.set_tasks)" | tee -a "$RUN/logs/run.txt"
   FORK_BANK=0
+fi
+if [[ "$FORK_BANK" != 1 && "$TVCACHE_USE_CACHE" == 1 && "$MODE" == train && "$ROLE" != client ]]; then
+  echo "metrics: the fork bank is off, so the cache metrics in report.md will not be split by epoch" | tee -a "$RUN/logs/run.txt"
 fi
 if [[ "$FORK_BANK" == 1 ]]; then
   export TVCACHE_CONTROL_PORT="${TVCACHE_CONTROL_PORT:-$TVCACHE_CONTROL_PORT_DEFAULT}"
@@ -151,7 +159,7 @@ trap cleanup EXIT
 #    size of podman's image store, how many containers and images exist, and
 #    how many sandboxes (compose projects: a Terminal-Bench sandbox is one).
 #    containers.csv: memory per running container, where podman can report it
-#    (podman-hpc gives every container the same value; ISSUES.md #29).
+#    (podman-hpc gives every container the same value; ISSUES.md #25).
 #    The client role has no containers; its memory goes to memory-client.csv.
 CGROUP_MEM="/sys/fs/cgroup$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null || true)/memory.current"
 if [[ "$ROLE" == client ]]; then
@@ -311,6 +319,13 @@ run_verl() {
   echo "veRL exited $VERL_STATUS" | tee -a "$RUN/logs/run.txt"
 }
 
+write_report() {
+  # The run's one report: settings and outcome, training per epoch, the
+  # testing plan's metrics, tvverify's findings (verl/stats.py). Written more
+  # than once, so a run cut off by its time limit still has one.
+  "$VERL_PY" -m tvcache_workloads.bash.verl.stats "$RUN" > "$RUN/logs/stats.log" 2>&1 || true
+}
+
 finish() {
   echo "peak memory: $(awk -F, 'NR>1 && $2!="NA" && $2+0>m {m=$2+0} END {print m+0}' "$RUN/logs/memory.csv") GB (job cgroup), most containers at once: $(awk -F, 'NR>1 && $4+0>m {m=$4+0} END {print m+0}' "$RUN/logs/memory.csv")" | tee -a "$RUN/logs/run.txt"
 
@@ -318,6 +333,7 @@ finish() {
     # no cache: nothing to verify and no snapshots to release
     echo "no cache: skipped tvverify and snapshot release" | tee -a "$RUN/logs/run.txt"
     echo "containers left: $($CONTAINER_CLI ps -q 2>/dev/null | wc -l)" | tee -a "$RUN/logs/run.txt"
+    write_report
     return 0
   fi
 
@@ -338,12 +354,13 @@ finish() {
   kill -TERM "$SIDECAR"; wait "$SIDECAR" || true
   DUMPS=("$RUN"/dumps/dump_*.json)
   FINAL="${DUMPS[${#DUMPS[@]}-1]}"
+  write_report   # before tvverify, which can take hours
   if [[ "$VERIFY" == 1 ]]; then
     # The final dump goes first: it is the only check that needs the snapshots,
     # which vanish with the node, and each replay takes ~9 s, so the 49-task
     # dump at CHECK_NODES=20 alone takes hours. Earlier dumps follow, newest
     # first, with whatever time the allocation has left (they can be rerun on
-    # a login node afterwards); report.md is rewritten after each one.
+    # a login node afterwards); check/report.md is rewritten after each one.
     mkdir -p "$RUN/check"
     FINAL_CHECK_NODES="${FINAL_CHECK_NODES:-8}"
     for (( i=${#DUMPS[@]}-1; i>=0; i-- )); do
@@ -354,9 +371,8 @@ finish() {
       (cd "$WORKLOADS" && "$VERL_PY" -m tvverify check-graph --adapter tvcache_workloads.bash.verify:TerminalBenchAdapter \
          --dump "$dump" "${flags[@]}" --json "$RUN/check/$name.json") \
          > "$RUN/check/$name.log" 2>&1 || true
-      "$VERL_PY" -m tvverify report "$RUN"/check/*.json > "$RUN/report.md" 2>/dev/null || true
+      "$VERL_PY" -m tvverify report "$RUN"/check/*.json > "$RUN/check/report.md" 2>/dev/null || true
     done
-    echo "report: $RUN/report.md" | tee -a "$RUN/logs/run.txt"
   else
     echo "tvverify: skipped (VERIFY=0)" | tee -a "$RUN/logs/run.txt"
   fi
@@ -375,11 +391,12 @@ async def go():
         print(f"{task}: released {len(released)} snapshots")
 asyncio.run(go())
 PY
-  # 8. the testing plan's metrics (metrics.md / metrics.json)
-  "$VERL_PY" -m tvcache_workloads.bash.verl.stats "$RUN" > "$RUN/logs/stats.log" 2>&1 || true
   leftover=$($CONTAINER_CLI images --filter label=com.docker.compose.project=tvcache-snapshot -q | wc -l)
   echo "snapshot images left: $leftover" | tee -a "$RUN/logs/run.txt"
   echo "containers left: $($CONTAINER_CLI ps -q 2>/dev/null | wc -l)" | tee -a "$RUN/logs/run.txt"
+  # 8. the run's report, now with tvverify's findings (report.md, metrics.json)
+  write_report
+  echo "report: $RUN/report.md" | tee -a "$RUN/logs/run.txt"
 }
 
 VERL_STATUS=0

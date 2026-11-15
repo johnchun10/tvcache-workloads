@@ -20,11 +20,15 @@ Clone these side by side:
 
 ```text
 tvcache/
-  tvclient/                   github.com/abhivijay96/tvclient
-  tvcache-rust/               github.com/abhivijay96/tvcache-rust
-  container-manager-public/   github.com/johnchun10/container-manager-public (branch cold-snapshots)
+  tvclient/                   github.com/johnchun10/tvclient
+  tvcache-rust/               github.com/johnchun10/tvcache-rust
+  container-manager-public/   github.com/johnchun10/container-manager-public
   tvcache-workloads/          this repo
 ```
+
+Use `main` of our forks for all four. Upstream `tvclient` and `tvcache-rust`
+(github.com/abhivijay96) do not have embeddings, graph contraction, the
+correctness fixes or the fork bank changes yet.
 
 You need Docker, [uv](https://docs.astral.sh/uv/), and Rust. Then:
 
@@ -44,7 +48,7 @@ It prints whether each step was a cache hit or executed, its output, and timings
 then deletes its snapshots. Useful options:
 
 - `--snapshot-mode parked` works with the original manager, which lacks the snapshot endpoints.
-- `--embed` stores command embeddings. This needs tvclient PR #2 and tvcache-rust PR #1, upgraded together, plus `sentence-transformers`.
+- `--embed` stores command embeddings. This needs `sentence-transformers`.
 
 ## Tests
 
@@ -97,5 +101,7 @@ replays `cd`, which overwrites it.
 ToolAgentLoop, sending every `bash` call through TVCache (one executor per
 trajectory) and rewarding -1 / 0 / 1 for no tool call / tests failed / tests
 passed. `bash/scripts/perlmutter/` runs it on NERSC Perlmutter (podman-hpc
-instead of Docker) and checks the cache it built with `tvverify check-graph`;
-see its README.
+instead of Docker) with no cache, TVCache, or TVCache with graph contraction,
+checks the cache it built with `tvverify check-graph`, and writes one report
+per run; see its README. `bash/docs/status.md` lists what is verified and what
+is still open.

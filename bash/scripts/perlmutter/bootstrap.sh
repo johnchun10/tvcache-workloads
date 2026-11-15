@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
 # Run on a Perlmutter login node. Clones (or updates) the four repositories a
-# run needs into $TVROOT (default $SCRATCH/tvcache), each at the branch below:
+# run needs into $TVROOT (default $SCRATCH/tvcache), each at `main` of our forks:
 #
 #   tvcache-workloads/                 this repository
 #   container-manager-public/          the container manager (podman-hpc support is in main)
-#   variants/combined/tvclient/        graph contraction + the correctness fixes
+#   variants/combined/tvclient/        graph contraction, the correctness fixes, the fork bank
 #   variants/combined/tvcache-rust/    the same, server side
 #
 #   bash bootstrap.sh          # then: bash setup.sh
 #
 # Starting from nothing:
-#   git clone -b contraction-runs https://github.com/johnchun10/tvcache-workloads.git $SCRATCH/tvcache/tvcache-workloads
+#   git clone https://github.com/johnchun10/tvcache-workloads.git $SCRATCH/tvcache/tvcache-workloads
 #   bash $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter/bootstrap.sh
 #
-# Running it again updates every clone to the newest commit of its branch.
+# Running it again updates every clone to the newest commit of its branch,
+# and moves a clone that is still on an older branch over to `main`.
 # Override a source with OWNER, WORKLOADS_REF, MANAGER_REF or TVCACHE_REF.
 set -euo pipefail
 TVROOT="${TVROOT:-$SCRATCH/tvcache}"
 OWNER="${OWNER:-johnchun10}"
-WORKLOADS_REF="${WORKLOADS_REF:-contraction-runs}"
+WORKLOADS_REF="${WORKLOADS_REF:-main}"
 MANAGER_REF="${MANAGER_REF:-main}"
-TVCACHE_REF="${TVCACHE_REF:-contraction-plus-fixes}"
+TVCACHE_REF="${TVCACHE_REF:-main}"
 
 sync_repo() {  # sync_repo <repository> <branch> <directory>
   local url="https://github.com/$OWNER/$1.git" branch="$2" dir="$3"

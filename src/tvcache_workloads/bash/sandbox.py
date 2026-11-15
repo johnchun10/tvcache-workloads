@@ -7,7 +7,7 @@ and restores them with env_class(task, env_id=handle).start(). Two ways to
 provide that, chosen with SandboxConfig.snapshot_mode:
 
 "cold" (default; needs the manager's /snapshot, /restore, /delete_snapshot,
-added on the cold-snapshots branch of our container-manager-public fork):
+added on main of our container-manager-public fork):
 
   fork()            /snapshot(live) -> committed images, nothing running;
                     handle "tb-snap:<snapshot id>"
@@ -166,8 +166,8 @@ class TerminalBenchSandbox(Sandbox):
                 if error.status == 404 and "Terminal not found" not in error.body:
                     raise ManagerError(
                         error.endpoint, error.status,
-                        "manager has no /snapshot endpoint; run the cold-snapshots branch "
-                        "of container-manager-public or use snapshot_mode='parked'",
+                        "manager has no /snapshot endpoint; run main of our container-manager-public "
+                        "fork or use snapshot_mode='parked'",
                     ) from error
                 raise
         else:
