@@ -11,8 +11,8 @@ this was written; the shakedown in section 7 is its first real test.
 What runs: GRPO training with veRL 0.9.1 on Terminal-Bench tasks,
 Qwen2.5-1.5B-Instruct, with every bash command going through TVCache,
 TVCache with graph contraction, or no cache. Afterwards `tvverify
-check-graph` checks the cache the run built, and `metrics.md` has the testing
-plan's metrics. A run is one job on two nodes: a CPU node for the containers,
+check-graph` checks the cache the run built, and the run's `report.md` has
+the outcome, the testing plan's metrics and tvverify's findings in one file. A run is one job on two nodes: a CPU node for the containers,
 cache server, container manager, fork bank and contraction, and a GPU node
 for veRL. It can also run on a single GPU node.
 
@@ -163,11 +163,11 @@ on: checks that every part runs before the long runs. From a login node:
 QOS are the `#SBATCH -A ... -q ...` lines in `hetjob.sbatch`; edit them for
 another project. Afterwards read, in the run directory:
 
-- `logs/run.txt`: the state check's verdict per task, veRL's exit code, peak
-  memory, the contraction totals, leftover snapshots;
-- `metrics.md`: hit rates, graph sizes and contraction rounds per epoch;
-- `report.md`: tvverify;
-- `server.out`, `client.out`: each node's output, if something failed.
+- `report.md`: the one report. Settings, veRL's exit code, peak memory and
+  leftovers; reward and step time per epoch; hit rates, graph sizes and
+  contraction rounds per epoch; tvverify's findings;
+- `logs/run.txt`, `server.out`, `client.out`: the run's log and each node's
+  output, if something failed.
 
 The same shakedown on one GPU node, if the two-node job does not start:
 
@@ -186,7 +186,8 @@ Then the contraction settings:
     bash submit_hetjob.sh main20-easy-med --threshold 0.95 --embedder jina-code
 
 - `none` runs every command in the rollout's own container: no cache server,
-  dumps, tvverify or `metrics.md`. The baseline for reward and step time.
+  dumps or tvverify; its `report.md` has only the outcome and the training
+  part. The baseline for reward and step time.
 - `tvcache` is the cache without contraction. The baseline for the testing
   plan's ratios.
 - `contraction` adds embeddings, the per-task state check and the contraction
@@ -215,9 +216,9 @@ empty cache.
 
 ## 9. What a run leaves in `$RUN`
 
-`README.md` has the full table. Start with `logs/run.txt` (settings and
-outcome), `metrics.md` (the testing plan's metrics) and `report.md`
-(tvverify). Put runs side by side, including one without a cache, with
+`README.md` has the full table. Read `report.md`: it has the settings and
+outcome, training per epoch, the testing plan's metrics and tvverify's
+findings. Put runs side by side, including one without a cache, with
 
     $VERL_PY compare_runs.py $TVROOT/runs/<a> $TVROOT/runs/<b> ... --plot charts/
 
@@ -234,7 +235,7 @@ Everything else comes from the environment:
 | Variable | Default | Meaning |
 |---|---|---|
 | `TVCACHE_VARIANT` | `combined` | which build under `variants/` to use (`bootstrap.sh` clones only `combined`) |
-| `FORK_BANK` | 1 | prewarming; 0 turns it off, and `metrics.md` is then not split by epoch |
+| `FORK_BANK` | 1 | prewarming; 0 turns it off, and the cache metrics in `report.md` are then not split by epoch |
 | `TOP_K` | 10 | fork bank: most used snapshots kept restored |
 | `SEED` | 42 | the dataloader's shuffle |
 | `N_GPUS` | 1 | GPUs veRL uses |

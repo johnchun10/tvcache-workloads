@@ -22,12 +22,12 @@ Needs `cargo`: the tests build and launch `tvcache-rust`, found at
 ### Unmodified or patched TVCache
 
 tvverify runs against any `tvclient` and `tvcache-rust`: it uses whichever
-`tvclient` is installed and whichever `tvcache-rust` it finds. On `main`
-(unmodified) it catches bugs B1, B2 and B3: the tests written for them are
-marked `known_bug` and report as expected failures (`xfail`), and
-`selftest` fails P1 and P2b. With the fixes (branch `correctness-fixes` of
-both repos) everything passes; set `TVVERIFY_PATCHED=1` to make the
-`known_bug` tests required:
+`tvclient` is installed and whichever `tvcache-rust` it finds. On upstream
+`main` (unmodified) it catches bugs B1, B2 and B3: the tests written for them
+are marked `known_bug` and report as expected failures (`xfail`), and
+`selftest` fails P1 and P2b. With the fixes (in `main` of our forks,
+github.com/johnchun10) everything passes; set `TVVERIFY_PATCHED=1` to make
+the `known_bug` tests required:
 
 ```bash
 TVVERIFY_PATCHED=1 .venv/bin/python -m pytest tests
@@ -41,7 +41,7 @@ TVVERIFY_PATCHED=1 .venv/bin/python -m pytest tests
 Everything else, including checking a cache trie by fresh-root replay
 (`check --suite replay`), works on the unmodified code.
 
-The bugs the `known_bug` tests catch on `main`:
+The bugs the `known_bug` tests catch on upstream `main`:
 
 | Bug | Where | What goes wrong |
 |---|---|---|
@@ -111,6 +111,12 @@ subclass, the workload as a `WorkloadAdapter` that points at it.
    of the rest. Pass `--no-snapshots` when the dump's snapshots are gone; the
    snapshot check (C2a) is then skipped. A replay that cannot run (`Failed to
    execute`, or an exception) is **inconclusive**: reported, but no exit code.
+
+   A server with graph contraction dumps a different shape: children are a
+   list and a merged node holds several tool calls. `tvverify/model/dump.py`
+   reads both shapes. Each extra call on a merged node becomes an *alias* of
+   the node, with its own value and runtime and the node's snapshot, so
+   replaying an alias checks the merge itself.
 
 `equals(other)` compares two live sandboxes (diff two filesystems, compare two
 database dumps). `state_digest()` returns hashed components instead; it is

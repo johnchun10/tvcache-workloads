@@ -2,8 +2,8 @@
 
 GRPO training with veRL on Terminal-Bench tasks, with every bash command going
 through TVCache, through TVCache with graph contraction, or through no cache at
-all, then `tvverify check-graph` on the cache the run built and the testing
-plan's metrics in `metrics.md`.
+all, then `tvverify check-graph` on the cache the run built. Each run ends
+with one report, `report.md`.
 
 A run is normally two nodes in one job: a CPU node for the containers, their
 snapshots, the cache server, the container manager, the fork bank and graph
@@ -79,7 +79,7 @@ Everything after the preset is passed to `run.sh`:
 | `--budget N` | contraction: live sandboxes all contraction jobs share (32) |
 | `--epochs N`, `--rollouts N`, `--batch N` | epochs, rollouts per task, tasks per training step |
 | `--max-tokens N` | tokens per rollout after the prompt (2048) |
-| `--verify`, `--no-verify` | run tvverify on the cache afterwards, or skip it. Skipping it also turns the trace off, and `metrics.md` then has no hit rates or call times |
+| `--verify`, `--no-verify` | run tvverify on the cache afterwards, or skip it. Skipping it also turns the trace off, and `report.md` then has no hit rates or call times |
 | `--tasks "a b c"` | replace the preset's task list |
 | `--mode sample` | rollouts only, no training |
 | `--prebuild` | only build the task images through the manager, then exit |
@@ -122,8 +122,8 @@ cache (`FORK_BANK=0` turns it off). While one batch rolls out, it starts one
 container per rollout for the next batch's tasks and restores the `TOP_K`
 (10) most used snapshots, and rollouts take these ready-made sandboxes instead
 of starting their own. It lives in the sidecar, which also logs where every
-training step begins and ends (`control.jsonl`); `metrics.md` needs that log
-to split its numbers by epoch, so with the fork bank off they are not split.
+training step begins and ends (`control.jsonl`); the report needs that log
+to split the cache metrics by epoch, so with the fork bank off they are not split.
 
 Contraction and the fork bank have separate sandbox limits: `--budget` for
 contraction, and rollouts per task times tasks per batch, plus `TOP_K`, for
@@ -133,7 +133,8 @@ the fork bank.
 
 | Path | What |
 |---|---|
-| `metrics.md`, `metrics.json` | the testing plan's metrics per task and epoch, and per contraction round (`verl/stats.py`) |
+| `report.md` | **the run's report**: settings and outcome, training per epoch, the testing plan's metrics per task and epoch and per contraction round, tvverify's findings (`verl/stats.py`) |
+| `metrics.json` | the same numbers as data |
 | `logs/run.txt` | the settings, then the outcome: veRL's exit code, peak memory, contraction totals, leftover snapshots |
 | `config.env` | every setting the run used |
 | `tasks/`, `tasks.parquet` | the task directories and dataset the run used |
@@ -143,27 +144,37 @@ the fork bank.
 | `control.jsonl` | step starts and ends, each task's idle window and graph size, fork bank warm-ups and hand-outs |
 | `state.json` | per task: comparable or not, and the paths skipped as noise |
 | `dumps/dump_*.json`, `epoch_*.json` | DUMP_ALL every `DUMP_INTERVAL` s (default 600) and at the end; and as each epoch ended |
-| `report.md`, `check/` | tvverify's report and its per-dump results (the last dump also checks snapshots) |
+| `check/` | tvverify's per-dump results and its own report, `check/report.md` (the last dump also checks snapshots) |
 | `trace/` | per-lookup trace and one line per rollout, when tvverify is on |
 | `logs/` | veRL, cache server, manager, podman, sidecar, contraction |
 | `server.out`, `client.out` | two-node job: each node's output |
 
 ## Reading the results
 
-- **`metrics.md`** is the report for the testing plan's numbers: hit rates,
-  time saved, graph and snapshot sizes, contraction rounds. It is written at
-  the end of every run with a cache. Method against baseline:
-  `$VERL_PY -m tvcache_workloads.bash.verl.stats --compare <tvcache run> <contraction run>`
-  (the two-node job does this itself when `CACHES` has both).
-- **`compare_runs.py`** puts runs side by side, including a run without a
-  cache: reward, step time, manager requests, memory, and charts. Its hit
-  rates are read from `metrics.json`, so the two reports agree.
+**One run: `report.md`.** It has everything about the run in one file:
 
-      $VERL_PY compare_runs.py $TVROOT/runs/<a> $TVROOT/runs/<b> ... --plot charts/
+1. the settings and how the run ended (veRL's exit code, peak memory, leftovers);
+2. training per epoch: reward, step time, rollout time;
+3. the testing plan's metrics per task and epoch: hit rates, time saved,
+   graph and snapshot sizes;
+4. contraction rounds;
+5. live sandboxes and memory;
+6. tvverify's findings.
 
-- **`report.md`** is tvverify's correctness report.
-- `$VERL_PY dump_tree.py $TVROOT/runs/<a> hello-world` prints one task's
-  cached commands, merged ones marked `=`.
+It is written when training ends and again when tvverify finishes, so a run
+cut off by its time limit still has one. A run without a cache gets parts 1
+and 2. `python -m tvcache_workloads.bash.verl.stats <run>` rewrites it.
+
+**Several runs: `compare_runs.py`.** One table with the runs side by side
+(reward, step time, hit rates, manager requests, memory), charts with
+`--plot`, and, when given a run with the cache and one with contraction, the
+testing plan's ratio table. It reads each run's numbers from the same data as
+`report.md`, so the two never disagree.
+
+    $VERL_PY compare_runs.py $TVROOT/runs/<a> $TVROOT/runs/<b> ... --plot charts/
+
+`$VERL_PY dump_tree.py $TVROOT/runs/<a> hello-world` prints one task's cached
+commands, merged ones marked `=`.
 
 ## Other settings
 
