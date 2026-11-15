@@ -387,6 +387,6 @@ def test_run_sh_resolves_presets_and_flags():
     assert "epochs 3, rollouts/task 8, tasks/batch 4" in main20.stdout and "tvverify off" in main20.stdout
     assert "threshold" not in main20.stdout
 
-    sweep = dry("main20-easy-med", "--threshold", "0.95", "--embedder", "jina-code")
-    assert "main20-easy-med-contraction-t0.95-jina-code" in sweep.stdout
+    sweep = dry("main20-easy-med", "--threshold", "0.97", "--embedder", "embeddinggemma2")
+    assert "main20-easy-med-contraction-t0.97-embeddinggemma2" in sweep.stdout
     assert dry("nope").returncode == 2 and dry("shakedown", "--cache", "maybe").returncode == 2

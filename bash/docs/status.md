@@ -34,7 +34,10 @@ On Perlmutter:
 
 - Any run of the current `main` on Perlmutter with real veRL, on two nodes or one. The
   shakedown (`bash submit_hetjob.sh shakedown`) is the first real test.
-- Loading the real embedding models (`setup.sh` checks this; `jina-code` needs remote code).
+- The embedding service and its environment on Perlmutter (`setup.sh` builds and checks
+  it). On a laptop both models load, and rollouts' code gets vectors from the service.
+- Which threshold suits `embeddinggemma2`. Its scores sit much higher than `minilm`'s
+  (`bash/scripts/perlmutter/README.md`); 0.95 to 0.98 is a guess from 12 command pairs.
 - 18 of the 20 task images of `main20-easy-med` (`run.sh <preset> --prebuild` reports
   failures). The tasks were chosen by reading Dockerfiles and tests: one small container,
   no network needed to solve, work kept under `/app`, tests check files.

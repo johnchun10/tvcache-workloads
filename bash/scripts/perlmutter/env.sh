@@ -22,6 +22,7 @@ if [[ "$CACHE" == none ]]; then export TVCACHE_USE_CACHE=0; else export TVCACHE_
 export TASKS_ROOT="${TASKS_ROOT:-$TVROOT/container-manager-public/tasks_easy_network_skip}"
 export MODEL="${MODEL:-$SCRATCH/hf/Qwen2.5-1.5B-Instruct}"
 export VERL_PY="${VERL_PY:-$TVROOT/verl-env/bin/python}"                      # a python with verl, vllm and tvcache-workloads installed
+export EMBED_PY="${EMBED_PY:-$TVROOT/embed-env/bin/python}"                    # a python with sentence-transformers, for the embedding service (setup.sh makes it)
 
 # Containers: podman-hpc instead of Docker (see container-manager-public
 # terminal_bench/terminal/container_cli.py). The socket and compose command
@@ -44,6 +45,7 @@ export TVCACHE_MANAGER_URL="${TVCACHE_MANAGER_URL:-http://127.0.0.1:$FLASK_PORT}
 
 export TVCACHE_CONTRACTION_PORT_DEFAULT=7879             # the contraction coordinator's control port
 export TVCACHE_CONTROL_PORT_DEFAULT=7880                 # the sidecar's fork bank (bash/control.py)
+export TVCACHE_EMBED_PORT_DEFAULT=7881                   # the embedding service (bash/embedding.py), on the node that runs veRL
 
 variant_dir() { echo "$TVROOT/variants/$TVCACHE_VARIANT"; }
 # tvverify builds and starts its own debug server from here (it is not next to

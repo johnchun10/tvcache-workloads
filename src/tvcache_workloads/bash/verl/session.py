@@ -59,6 +59,9 @@ class CacheSettings:
     # stateful command and store the vector with it; "" stores none. Needs a
     # tvclient and server with embeddings, and is what contraction pairs by.
     embedder: str = ""
+    # The embedding service's port on this node (embedding.py); 0 = each
+    # worker process loads the model itself.
+    embed_port: int = 0
     # The contraction coordinator's control port (contraction.py); 0 = no
     # contraction, so rollouts never wait for it.
     contraction_port: int = 0
@@ -86,6 +89,7 @@ class CacheSettings:
             "snapshot_threshold": get("snapshot_threshold", "TVCACHE_SNAPSHOT_THRESHOLD", float),
             "use_cache": get("use_cache", "TVCACHE_USE_CACHE", _as_bool),
             "embedder": get("embedder", "TVCACHE_EMBEDDER"),
+            "embed_port": get("embed_port", "TVCACHE_EMBED_PORT", int),
             "contraction_port": get("contraction_port", "TVCACHE_CONTRACTION_PORT", int),
             "control_port": get("control_port", "TVCACHE_CONTROL_PORT", int),
         }
@@ -202,7 +206,7 @@ def make_session(task: str, settings: CacheSettings) -> RolloutSession:
     if settings.embedder:
         # Passed only when on, so the default also works with a tvclient that
         # predates embeddings.
-        use_embedder(settings.embedder)
+        use_embedder(settings.embedder, settings.embed_port)
         extra["embed_tool_calls"] = True
     executor = TvcacheToolExecutor(
         sandbox, BashToolCall, settings.cache_task_id(task),

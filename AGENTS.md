@@ -47,7 +47,9 @@ the open tasks.
   identical sandboxes and marks tasks that cannot be compared.
 - `contraction.py`: the coordinator that owns tvclient's `Contractor` and pauses a task's
   contraction while rollouts hold it; logs events and summarizes them.
-- `embedding.py`: the embedders a run can choose by name.
+- `embedding.py`: the embedders a run can choose by name, and the service that runs one
+  beside veRL in its own Python environment (veRL's `transformers` is too old for them).
+  The file must not import from this package: the service runs it on its own.
 - `control.py`: the client side of the fork bank's control port. The fork bank
   (prewarming) itself lives in `bash/scripts/perlmutter/cache_sidecar.py`.
 - `verl/stats.py`: writes a run's one report, `report.md` (settings and outcome, training

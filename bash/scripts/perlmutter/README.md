@@ -74,8 +74,8 @@ Everything after the preset is passed to `run.sh`:
 | Flag | Meaning |
 |---|---|
 | `--cache none\|tvcache\|contraction` | no cache / TVCache / TVCache with graph contraction |
-| `--threshold X` | contraction: similarity threshold (the sweep: 0.8, 0.9, 0.95) |
-| `--embedder minilm\|jina-code` | contraction: `all-MiniLM-L6-v2` or `jina-embeddings-v2-base-code` |
+| `--threshold X` | contraction: similarity threshold. The useful range depends on the embedder (below) |
+| `--embedder minilm\|embeddinggemma2` | contraction: `all-MiniLM-L6-v2` or `google/embeddinggemma-2` |
 | `--budget N` | contraction: live sandboxes all contraction jobs share (32) |
 | `--epochs N`, `--rollouts N`, `--batch N` | epochs, rollouts per task, tasks per training step |
 | `--max-tokens N` | tokens per rollout after the prompt (2048) |
@@ -114,6 +114,24 @@ job avoids this by keeping the containers on the CPU node.
    free, sharing `--budget` sandboxes among them.
 3. **Embeddings.** Every executed command is embedded on the CPU and stored
    with its cache entry; the server pairs similar commands for comparison.
+   One embedding service runs beside veRL (`logs/embed.log`), in its own
+   Python environment (`embed-env`, made by `setup.sh`), because the
+   embedding models need a newer `transformers` than veRL allows.
+
+The two embedders score very differently, so a threshold means something
+else for each. On 12 hand-written command pairs (a rough guide, not a
+measurement on real runs):
+
+| | `minilm` | `embeddinggemma2` |
+|---|---|---|
+| the same command written two ways | 0.79 to 0.97 | 0.96 to 0.99 |
+| different commands that look alike | 0.60 to 0.98 | 0.92 to 0.98 |
+| unrelated commands | 0.00 | 0.77 |
+| thresholds worth sweeping | 0.8, 0.9, 0.95 | 0.95, 0.97, 0.98 |
+
+`embeddinggemma2` puts `task: sentence similarity | query: ` in front of each
+command, as its model card asks. At 0.9 it would pair nearly every two
+commands, and each pair costs a sandbox comparison.
 
 ## What the fork bank adds to a run
 
@@ -146,7 +164,7 @@ the fork bank.
 | `dumps/dump_*.json`, `epoch_*.json` | DUMP_ALL every `DUMP_INTERVAL` s (default 600) and at the end; and as each epoch ended |
 | `check/` | tvverify's per-dump results and its own report, `check/report.md` (the last dump also checks snapshots) |
 | `trace/` | per-lookup trace and one line per rollout, when tvverify is on |
-| `logs/` | veRL, cache server, manager, podman, sidecar, contraction |
+| `logs/` | veRL, cache server, manager, podman, sidecar, contraction, embedding service |
 | `server.out`, `client.out` | two-node job: each node's output |
 
 ## Reading the results

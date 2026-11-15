@@ -26,8 +26,9 @@
 #   server  CPU node: podman, cache server, manager, sidecar (dumps, fork bank),
 #           contraction coordinator, then tvverify and snapshot release once
 #           the client is done. Containers and snapshots stay here.
-#   client  GPU node: veRL only. It waits for $RUN/server.ready (the server's
-#           hostname) and sends cache, manager and control traffic there.
+#   client  GPU node: veRL and, with contraction, the embedding service. It
+#           waits for $RUN/server.ready (the server's hostname) and sends
+#           cache, manager and control traffic there.
 # server and client share one RUN (on scratch) and are started together by
 # hetjob.sbatch. The handshake files are $RUN/server.ready and $RUN/client.done
 # (veRL's exit status; hetjob.sbatch writes it too, in case the client dies
@@ -50,7 +51,7 @@ MAX_TURNS="${MAX_TURNS:-30}"           # tool calls per rollout
 VERIFY="${VERIFY:-1}"                  # 1 = tvverify check-graph on the dumps afterwards
 CHECK_NODES="${CHECK_NODES:-20}"       # tvverify nodes replayed per task
 THRESHOLD="${THRESHOLD:-0.9}"          # contraction: similarity threshold
-EMBEDDER="${EMBEDDER:-minilm}"         # contraction: minilm | jina-code | a sentence-transformers model name
+EMBEDDER="${EMBEDDER:-minilm}"         # contraction: minilm | embeddinggemma2 | a sentence-transformers model name
 BUDGET="${BUDGET:-32}"                 # contraction: live sandboxes all jobs share
 FORK_BANK="${FORK_BANK:-1}"            # TVCache's prewarming: warm roots for the next batch, pre-forked hot snapshots
 TOP_K="${TOP_K:-10}"                   # fork bank: hot snapshots pre-forked per batch
@@ -82,6 +83,8 @@ if [[ "$CACHE" == contraction && ! -f "$(variant_dir)/tvclient/tvclient/contract
 fi
 [[ "$TVCACHE_USE_CACHE" == 0 || "$ROLE" == client || -x "$(variant_dir)/tvcache-rust/target/release/tvcache" || "$MODE" == prebuild ]] || {
   echo "no cache server at $(variant_dir)/tvcache-rust/target/release/tvcache; run setup.sh" >&2; exit 1; }
+[[ "$CACHE" != contraction || "$ROLE" == server || "$MODE" == prebuild || -x "$EMBED_PY" ]] || {
+  echo "no embedding environment at $EMBED_PY; run setup.sh" >&2; exit 1; }
 # The fork bank needs a tvclient whose ForkBank can follow the batches
 # (set_tasks) and be served to other processes.
 if [[ "$TVCACHE_USE_CACHE" != 1 || "$MODE" != train ]]; then
@@ -102,8 +105,9 @@ fi
 if [[ "$CACHE" == contraction ]]; then
   export TVCACHE_EMBEDDER="$EMBEDDER"
   export TVCACHE_CONTRACTION_PORT="${TVCACHE_CONTRACTION_PORT:-$TVCACHE_CONTRACTION_PORT_DEFAULT}"
+  export TVCACHE_EMBED_PORT="${TVCACHE_EMBED_PORT:-$TVCACHE_EMBED_PORT_DEFAULT}"
 else
-  export TVCACHE_EMBEDDER="" TVCACHE_CONTRACTION_PORT=""
+  export TVCACHE_EMBEDDER="" TVCACHE_CONTRACTION_PORT="" TVCACHE_EMBED_PORT=""
 fi
 
 # The task set: a list of names is copied into $RUN/tasks, which then is the
@@ -260,6 +264,35 @@ connect_to_server() {
   echo "client: cache $TVCACHE_HOST:$TVCACHE_PORT, manager $TVCACHE_MANAGER_URL" | tee -a "$RUN/logs/run.txt"
 }
 
+start_embedder() {
+  # The embedding model, as one service on the node that runs veRL: every
+  # rollout worker asks it instead of loading its own copy. It has its own
+  # Python environment (setup.sh; ISSUES.md #28). Its port opens once the
+  # model is loaded.
+  EMBED_SERVICE=""
+  [[ "$CACHE" == contraction ]] || return 0
+  HF_HUB_DISABLE_PROGRESS_BARS=1 TOKENIZERS_PARALLELISM=false \
+    "$EMBED_PY" "$WORKLOADS/src/tvcache_workloads/bash/embedding.py" serve "$EMBEDDER" --port "$TVCACHE_EMBED_PORT" \
+    > "$RUN/logs/embed.log" 2>&1 &
+  EMBED_SERVICE=$!; PIDS+=("$EMBED_SERVICE")
+  local waited=0
+  until (exec 3<>"/dev/tcp/127.0.0.1/$TVCACHE_EMBED_PORT") 2>/dev/null; do
+    if ! kill -0 "$EMBED_SERVICE" 2>/dev/null || (( waited >= 900 )); then
+      echo "embedding service ($EMBEDDER) did not start; last lines of logs/embed.log:" | tee -a "$RUN/logs/run.txt" >&2
+      tail -n 5 "$RUN/logs/embed.log" | tee -a "$RUN/logs/run.txt" >&2
+      exit 1
+    fi
+    sleep 2; waited=$(( waited + 2 ))
+  done
+  tail -n 1 "$RUN/logs/embed.log" | tee -a "$RUN/logs/run.txt"
+}
+
+stop_embedder() {
+  [[ -n "$EMBED_SERVICE" ]] || return 0
+  kill -TERM "$EMBED_SERVICE" 2>/dev/null || true; wait "$EMBED_SERVICE" 2>/dev/null || true
+  tail -n 1 "$RUN/logs/embed.log" | tee -a "$RUN/logs/run.txt"   # how many commands it embedded
+}
+
 run_verl() {
   # 4. veRL
   if [[ -n "$RESUME_FROM" && ! -e "$RUN/checkpoints" ]]; then
@@ -404,7 +437,9 @@ case "$ROLE" in
   all)
     export TVCACHE_HOST=127.0.0.1
     start_services
+    start_embedder
     run_verl
+    stop_embedder
     finish
     exit "$VERL_STATUS"
     ;;
@@ -420,7 +455,9 @@ case "$ROLE" in
     ;;
   client)
     connect_to_server
+    start_embedder
     run_verl
+    stop_embedder
     echo "$VERL_STATUS" > "$RUN/client.done"
     exit "$VERL_STATUS"
     ;;

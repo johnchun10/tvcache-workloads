@@ -7,8 +7,7 @@ bash/README.md). Example:
         --namespace demo1 --snapshot-threshold 0.001 --output results/demo1.json
 
 --embed stores an embedding of every executed command in the cache. It needs
-tvclient with embedding support (PR #2) and a matching tvcache-rust (PR #1),
-plus sentence-transformers and, for the default model, transformers < 5.
+sentence-transformers (and transformers >= 5.19 for embeddinggemma2).
 """
 
 import argparse
@@ -28,18 +27,15 @@ from tvcache_workloads.bash import (
 from tvcache_workloads.bash.cache_admin import release_task_snapshots
 from tvcache_workloads.bash.sandbox import NAMESPACE_SEPARATOR
 
-# Same model and settings as the embedding demo in tvcache-rust PR #1.
-DEFAULT_EMBEDDING_MODEL = "jinaai/jina-embeddings-v2-base-code"
 
+def _load_embedder(name: str) -> None:
+    from tvclient import set_embedder
 
-def _load_embedder(model_name: str, trust_remote_code: bool) -> None:
-    from tvclient import SentenceTransformerEmbedder, set_embedder
+    from tvcache_workloads.bash.embedding import CommandEmbedder
 
-    embedder = SentenceTransformerEmbedder(
-        model_name, max_seq_length=1024, trust_remote_code=trust_remote_code
-    )
+    embedder = CommandEmbedder(name)
     # Load now: the executor only logs a warning if embedding fails later.
-    print(f"loaded {model_name} (dimension {len(embedder.encode('warm up'))})")
+    print(f"loaded {embedder.model_name} (dimension {len(embedder.encode('warm up'))})")
     set_embedder(embedder)
 
 
@@ -78,18 +74,14 @@ async def main() -> int:
                         help="keep the snapshots after the run instead of deleting them")
     parser.add_argument("--output", type=Path, default=None, help="write per-step JSON results here")
     parser.add_argument("--embed", action="store_true",
-                        help="store an embedding of each executed command (needs tvclient PR #2)")
-    parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
-    parser.add_argument("--trust-remote-code", action="store_true",
-                        help="allow the model's own code; implied for the default Jina model")
+                        help="store an embedding of each executed command")
+    parser.add_argument("--embedding-model", default="minilm",
+                        help="minilm, embeddinggemma2 or a sentence-transformers model name")
     args = parser.parse_args()
 
     trace = load_trace_file(args.trace)
     if args.embed:
-        _load_embedder(
-            args.embedding_model,
-            args.trust_remote_code or args.embedding_model == DEFAULT_EMBEDDING_MODEL,
-        )
+        _load_embedder(args.embedding_model)
     namespace = args.namespace or uuid.uuid4().hex[:8]
     task_id = f"{trace['task']}{NAMESPACE_SEPARATOR}{namespace}"
     sandbox_class = TerminalBenchSandbox.with_config(
