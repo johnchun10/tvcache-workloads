@@ -25,11 +25,12 @@
 #   --verify | --no-verify             run tvverify on the cache afterwards, or not
 #   --tasks "a b c"                    replace the preset's task list
 #   --mode train|sample                sample = rollouts only, no training
+#   --snapshot-threshold S|adaptive    snapshot after calls slower than S seconds (1.0), or tvclient's adaptive policy
 #   --name LABEL                       appended to the run directory's name
 #   --prebuild                         build the task images through the manager and exit
 #   --dry-run                          print the resolved settings and exit
-# Everything else train_pilot.sh reads (MODEL, N_GPUS, SNAPSHOT_THRESHOLD, RUN,
-# TVCACHE_VARIANT, ...) still comes from the environment.
+# Everything else train_pilot.sh reads (MODEL, N_GPUS, RUN, TVCACHE_VARIANT,
+# ...) comes from the environment.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -55,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --max-tokens) need "$@"; MAX_TOKENS="$2"; shift 2 ;;
     --tasks)      need "$@"; TASKS="$2"; shift 2 ;;
     --mode)       need "$@"; MODE="$2"; shift 2 ;;
+    --snapshot-threshold) need "$@"; SNAPSHOT_THRESHOLD="$2"; [[ "$2" == adaptive ]] && SNAPSHOT_THRESHOLD=""; shift 2 ;;
     --name)       need "$@"; NAME="$2"; shift 2 ;;
     --verify)     VERIFY=1; shift ;;
     --no-verify)  VERIFY=0; shift ;;
@@ -67,6 +69,7 @@ done
 
 case "$CACHE" in none|tvcache|contraction) ;; *) echo "--cache must be none, tvcache or contraction (got '$CACHE')" >&2; exit 2 ;; esac
 case "$MODE" in train|sample|prebuild) ;; *) echo "--mode must be train or sample (got '$MODE')" >&2; exit 2 ;; esac
+[[ -z "${SNAPSHOT_THRESHOLD:-}" || "$SNAPSHOT_THRESHOLD" =~ ^[0-9]*\.?[0-9]+$ ]] || { echo "--snapshot-threshold must be seconds or 'adaptive' (got '$SNAPSHOT_THRESHOLD')" >&2; exit 2; }
 TASKS="$(echo $TASKS)"   # one line, single spaces
 [[ -n "$TASKS" ]] || { echo "the preset has no TASKS" >&2; exit 2; }
 
@@ -77,10 +80,12 @@ LABEL="$PRESET-$CACHE"
 
 export PRESET TASKS CACHE THRESHOLD EMBEDDER BUDGET EPOCHS ROLLOUTS BATCH MAX_TOKENS VERIFY MODE
 export RUN_LABEL="$LABEL"
+[[ -z "${SNAPSHOT_THRESHOLD+set}" ]] || export SNAPSHOT_THRESHOLD
 
 echo "preset $PRESET -> $LABEL"
 echo "  tasks ($(echo "$TASKS" | wc -w | tr -d ' ')): $TASKS"
 echo "  cache: $CACHE$([[ "$CACHE" == contraction ]] && echo " (threshold $THRESHOLD, embedder $EMBEDDER, budget $BUDGET sandboxes)")"
 echo "  epochs $EPOCHS, rollouts/task $ROLLOUTS, tasks/batch $BATCH, max tokens/rollout $MAX_TOKENS, tvverify $([[ "$VERIFY" == 1 ]] && echo on || echo off), mode $MODE"
+snap="${SNAPSHOT_THRESHOLD-1.0}"; echo "  snapshot threshold: ${snap:-adaptive}"
 [[ "$DRY_RUN" == 1 ]] && exit 0
 exec bash "$HERE/train_pilot.sh"

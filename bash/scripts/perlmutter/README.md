@@ -1,212 +1,177 @@
-# Terminal-Bench runs on NERSC Perlmutter
+# Terminal-Bench runs on Perlmutter
 
-GRPO training with veRL on Terminal-Bench tasks, with every bash command going
-through TVCache, through TVCache with graph contraction, or through no cache at
-all, then `tvverify check-graph` on the cache the run built. Each run ends
-with one report, `report.md`.
+A run is GRPO training with veRL on Terminal-Bench tasks, with every bash
+command going through no cache, TVCache, or TVCache with graph contraction.
+Afterwards tvverify checks the cache the run built, and everything ends up in
+one file, `<run>/report.md`.
 
-A run is normally two nodes in one job: a CPU node for the containers, their
-snapshots, the cache server, the container manager, the fork bank and graph
-contraction, and a GPU node for veRL. Everything can also run on one GPU node.
+A run is one Slurm job on two nodes: a **CPU node** for the containers,
+snapshots, cache server, container manager, fork bank and contraction, and a
+**GPU node** for veRL. Slurm starts both, so you only work on a login node.
 
-`GUIDE.md` has the original step-by-step bring-up with an FAQ, and `ISSUES.md`
-what broke along the way. This file is the short reference.
+First time? Do the one-time setup in `GUIDE.md`. It also has fixes for
+known errors.
 
-Perlmutter has no Docker daemon, so the container manager drives
-**podman-hpc** (`CONTAINER_CLI`, `COMPOSE_CMD`, `DOCKER_HOST`; see `env.sh`).
+## Where things run
 
-## Setting up
+| What | Where | Command (from this directory) |
+|---|---|---|
+| Update the code | login node | `bash bootstrap.sh && bash setup.sh` |
+| Check the task images build | login node (free) | `bash run.sh <preset> --prebuild` |
+| Print a run's settings | login node | `bash run.sh <preset> [flags] --dry-run` |
+| Start a run | login node | `bash submit_hetjob.sh <preset> [flags]` |
+| Compare runs | login node | `$VERL_PY compare_runs.py <run> <run> ...` |
 
-All on a login node (free). `$TVROOT` is `$SCRATCH/tvcache` unless you set it.
-
-    git clone https://github.com/johnchun10/tvcache-workloads.git $SCRATCH/tvcache/tvcache-workloads
-    cd $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter
-    bash bootstrap.sh     # clones or updates all four repositories, each at main of our forks
-    bash setup.sh         # builds the cache server, installs the Python side, downloads the models
-
-`bootstrap.sh` lays out:
-
-| Directory | Repository (`main` of `github.com/johnchun10/...`) |
-|---|---|
-| `tvcache-workloads/` | this one |
-| `container-manager-public/` | podman-hpc support, cold snapshots, snapshot sizes |
-| `variants/combined/tvclient/`, `variants/combined/tvcache-rust/` | graph contraction, the correctness fixes, the fork bank |
-
-Everything a run needs is in `main`; no other branch is used. Run both scripts
-again to pick up new commits (a clone still on an older branch is moved to `main`). First time on a new account,
-also do the podman probe and the veRL environment from `GUIDE.md` (steps 2–4).
+`$TVROOT` is `$SCRATCH/tvcache`. Runs go in `$TVROOT/runs/`, and Slurm
+output goes in `$TVROOT/runs/slurm/`.
 
 ## Running
 
-    bash submit_hetjob.sh <preset> [flags]     # login node: queues the two-node job
+For a new set of tasks:
 
-| Preset | Tasks | Defaults |
+    bash run.sh shakedown --prebuild                  # do the images build?
+    bash submit_hetjob.sh shakedown                   # small run: does every part work?
+    bash submit_hetjob.sh main20-easy-med --caches "none tvcache contraction" --time 08:00:00
+
+| Preset | Tasks | Settings |
 |---|---|---|
-| `shakedown` | 1 easy + 1 medium | contraction at 0.9 with `minilm`; 2 epochs, 4 rollouts per task, 1 task per batch |
-| `main20-easy-med` | 10 easy + 10 medium | contraction at 0.9 with `minilm`; 5 epochs, 8 rollouts per task, 4 tasks per batch |
+| `shakedown` | 1 easy + 1 medium | contraction at 0.9 with `minilm`; 2 epochs, 4 rollouts per task, 1 task per step |
+| `main20-easy-med` | 10 easy + 10 medium | contraction at 0.9 with `minilm`; 5 epochs, 8 rollouts per task, 4 tasks per step |
 
-The order for a new set of tasks, all from a login node:
+Presets are in `presets/`. Any flag below overrides them.
 
-    bash run.sh shakedown --prebuild           # do the task images build? (free)
-    bash submit_hetjob.sh shakedown            # every part runs once, small
-    CACHES="none tvcache contraction" TIME=<hh:mm:ss> bash submit_hetjob.sh main20-easy-med
+### Flags
 
-`CACHES` runs the preset once per cache mode, back to back in one job, each in
-its own `$RUN-<mode>` with an empty cache. With both `tvcache` and
-`contraction` in the list it also writes the testing plan's ratio table to
-`$RUN-compare.md`. Without `CACHES` the job runs the preset's own mode.
+The job flags only exist on `submit_hetjob.sh`. Every other flag is passed
+on to `run.sh`.
 
-`submit_hetjob.sh` reads these from the environment:
-
-| Variable | Meaning |
+| Job flag | Meaning |
 |---|---|
-| `CACHES` | cache modes to run in turn, e.g. `"tvcache contraction"` |
-| `TIME` | time limit for both nodes (default 05:00:00, set in `hetjob.sbatch`) |
-| `SPLIT`, `TOTAL` | train in parts of `SPLIT` steps up to `TOTAL`, one job per part, each resuming from the previous part's checkpoint |
-| `BASE` | the run directory (default `$SCRATCH/tvcache/runs/<time>-<preset>-het`) |
+| `--time hh:mm:ss` | time limit for both nodes (default 05:00:00) |
+| `--caches "a b ..."` | run the preset once per cache mode, back to back in one job, each with an empty cache. With `tvcache` and `contraction` both listed, it also writes `<run>-compare.md` |
+| `--split N --total M` | train M steps in parts of N, one job per part, each resuming from the previous part's checkpoint. The cache starts empty in each part |
 
-The account and QOS are the `#SBATCH -A ... -q ...` lines in `hetjob.sbatch`
-(one pair per node); edit them for another project. `probe_hetjob.sbatch`
-checks in 10 minutes that a CPU+GPU job starts and the nodes reach each other.
-
-Everything after the preset is passed to `run.sh`:
-
-| Flag | Meaning |
+| Run flag | Meaning |
 |---|---|
 | `--cache none\|tvcache\|contraction` | no cache / TVCache / TVCache with graph contraction |
-| `--threshold X` | contraction: similarity threshold. The useful range depends on the embedder (below) |
-| `--embedder minilm\|embeddinggemma2` | contraction: `all-MiniLM-L6-v2` or `google/embeddinggemma-2` |
-| `--budget N` | contraction: live sandboxes all contraction jobs share (32) |
+| `--threshold X` | contraction: how similar two commands must be to be compared for merging (table below) |
+| `--embedder minilm\|embeddinggemma2` | contraction: the model that scores command similarity |
+| `--budget N` | contraction: sandboxes it may use at once (32) |
+| `--snapshot-threshold S\|adaptive` | snapshot after commands slower than S seconds (1.0), or tvclient's adaptive policy (rarely snapshots) |
 | `--epochs N`, `--rollouts N`, `--batch N` | epochs, rollouts per task, tasks per training step |
 | `--max-tokens N` | tokens per rollout after the prompt (2048) |
-| `--verify`, `--no-verify` | run tvverify on the cache afterwards, or skip it. Skipping it also turns the trace off, and `report.md` then has no hit rates or call times |
 | `--tasks "a b c"` | replace the preset's task list |
 | `--mode sample` | rollouts only, no training |
-| `--prebuild` | only build the task images through the manager, then exit |
-| `--dry-run` | print the resolved settings and exit |
+| `--no-verify` | skip tvverify. This also turns off the trace, so `report.md` then has no hit rates |
+| `--name LABEL` | added to the run directory's name |
+| `--prebuild`, `--dry-run` | build the task images and exit / print the settings and exit |
 
-### On one node instead
+Rarely changed settings come from the environment: `MODEL`, `N_GPUS` (1),
+`MAX_TURNS` (30), `SEED` (42), `FORK_BANK` (1), `TOP_K` (10), `CHECK_NODES`
+(20), `DUMP_INTERVAL` (600 s), and `RUN` (reuse a run directory to resume from
+its checkpoint). See `env.sh` and the top of `train_pilot.sh`. The Slurm
+account and QOS are the `#SBATCH -A/-q` lines in `hetjob.sbatch`, one pair
+per node.
 
-`run.sh` is also the single-node launcher: inside a GPU allocation it runs
-everything on that node.
+### Contraction thresholds
 
-    sbatch -q shared -C gpu -G 2 -c 64 -t 02:00:00 -A <project> \
-      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "bash run.sh shakedown"
-
-Half a node should do for the two-task shakedown. The 49-task pilot needed
-the whole node (`-N 1 -G 4 -c 128 --mem=0`): on GPU nodes podman's image
-store is `/tmp`, a RAM disk that counts toward the job's memory, and both a
-quarter and a half node ran out of memory (ISSUES.md #16, #17). The two-node
-job avoids this by keeping the containers on the CPU node.
-
-## What contraction adds to a run
-
-1. **State check** (`state.json`, `logs/state_check.log`). Contraction merges
-   two cached commands when their sandboxes compare equal: same files under
-   `/app`, `/root`, `/etc` and `/tmp`, same exported variables, same current
-   directory, same installed packages. Before training, three sandboxes in the
-   same state are compared per task; paths that differ anyway are noise and
-   are skipped for that task. A task whose sandboxes cannot be made to compare
-   equal is trained on but never contracted.
-2. **Coordinator** (`logs/contraction.log`). Contraction may only work on a
-   task while none of its rollouts is running. Rollouts tell the coordinator
-   when they start and finish with a task; it contracts the tasks that are
-   free, sharing `--budget` sandboxes among them.
-3. **Embeddings.** Every executed command is embedded on the CPU and stored
-   with its cache entry; the server pairs similar commands for comparison.
-   One embedding service runs beside veRL (`logs/embed.log`), in its own
-   Python environment (`embed-env`, made by `setup.sh`), because the
-   embedding models need a newer `transformers` than veRL allows.
-
-The two embedders score very differently, so a threshold means something
-else for each. On 12 hand-written command pairs (a rough guide, not a
-measurement on real runs):
+The two embedders score on different scales. These figures come from 12
+hand-written command pairs, so treat them as a rough guide:
 
 | | `minilm` | `embeddinggemma2` |
 |---|---|---|
-| the same command written two ways | 0.79 to 0.97 | 0.96 to 0.99 |
-| different commands that look alike | 0.60 to 0.98 | 0.92 to 0.98 |
+| same command written two ways | 0.79–0.97 | 0.96–0.99 |
+| different commands that look alike | 0.60–0.98 | 0.92–0.98 |
 | unrelated commands | 0.00 | 0.77 |
-| thresholds worth sweeping | 0.8, 0.9, 0.95 | 0.95, 0.97, 0.98 |
+| thresholds to sweep | 0.8, 0.9, 0.95 | 0.95, 0.97, 0.98 |
 
-`embeddinggemma2` puts `task: sentence similarity | query: ` in front of each
-command, as its model card asks. At 0.9 it would pair nearly every two
-commands, and each pair costs a sandbox comparison.
+### On one GPU node instead
 
-## What the fork bank adds to a run
+`run.sh` called inside a GPU allocation runs everything on that node:
 
-The fork bank is TVCache's prewarming. It is on for every training run with a
-cache (`FORK_BANK=0` turns it off). While one batch rolls out, it starts one
-container per rollout for the next batch's tasks and restores the `TOP_K`
-(10) most used snapshots, and rollouts take these ready-made sandboxes instead
-of starting their own. It lives in the sidecar, which also logs where every
-training step begins and ends (`control.jsonl`); the report needs that log
-to split the cache metrics by epoch, so with the fork bank off they are not split.
+    sbatch -q regular -C gpu -N 1 -G 4 -c 128 --mem=0 -t 05:00:00 -A <project> \
+      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "bash run.sh shakedown"
 
-Contraction and the fork bank have separate sandbox limits: `--budget` for
-contraction, and rollouts per task times tasks per batch, plus `TOP_K`, for
-the fork bank.
+Use a whole node. On GPU nodes podman stores images in `/tmp`, which is RAM
+and counts against the job's memory. Half a node ran out of memory on the
+49-task pilot.
 
-## What a run leaves in `$RUN`
+## Reading `report.md`
+
+It is written when training ends, and again after tvverify. To rebuild it:
+`$VERL_PY -m tvcache_workloads.bash.verl.stats <run>`.
+
+**Training**
+- **Reward per rollout:** 1 if the task's tests passed, 0 if they failed, -1
+  if the model never made a valid tool call.
+- **Learning signal:** GRPO learns only from a task whose rollouts score
+  differently from each other. All-pass or all-fail gives no signal.
+
+**Cache, per task and epoch**
+- **lookups:** the commands the model ran. Each is looked up with its full
+  command history.
+- **cache_hit_rate:** lookups answered from the cache, with nothing run.
+- **new_seq_hit_rate:** hits on a command history that was never stored
+  itself but was merged with one that was. This is what contraction adds.
+- **lpm_hit_rate:** of the misses, how many resumed from a saved snapshot
+  (the longest prefix match), so only the remaining commands ran.
+- **new_prefix_lpm_hit_rate:** the same, for snapshots reached through a
+  merged prefix.
+- **lpm_time_saved_pct:** command time skipped thanks to those resumes.
+- **nodes:** one per stored command, with its history.
+- **graph_depth:** the longest stored command chain.
+- **snapshots:** saved container states. One is only taken after a command
+  slower than `--snapshot-threshold`.
+- **merged_nodes_in_graph:** nodes contraction merged with another.
+- **resumes:** where a rollout's container came from after a miss:
+  - `fresh`: a new container started from the task's image
+  - `live`: a running container already in the right state
+  - `fork`: restored from a snapshot
+- **from bank:** the container was prewarmed by the fork bank.
+
+**Contraction and the fork bank**
+- **Contraction rounds:** contraction runs on a task only while none of its
+  rollouts is active. It pairs similar commands by embedding score, replays
+  them in sandboxes, and merges the ones that end in the same state (same
+  files, environment variables, current directory and packages).
+- **The state check:** before training, three identical sandboxes per task
+  are compared. Paths that still differ count as noise for that task (in
+  `state.json`), and a task that can't be compared is never contracted.
+- **Preempted:** the round stopped because a rollout came back.
+- **Fork bank:** TVCache's prewarming. While one step runs, it starts
+  containers for the next step's tasks and restores the `TOP_K` most-used
+  snapshots.
+
+**Correctness (tvverify)**
+- tvverify replays cached nodes from a fresh container and compares them with
+  what the cache holds.
+- **bug:** the cache disagrees with the replay.
+- **noise:** two fresh replays already disagree with each other, for example
+  timestamps or random keys.
+- **inconclusive:** the replay couldn't run.
+
+## Other files in a run
 
 | Path | What |
 |---|---|
-| `report.md` | **the run's report**: settings and outcome, training per epoch, the testing plan's metrics per task and epoch and per contraction round, tvverify's findings (`verl/stats.py`) |
-| `metrics.json` | the same numbers as data |
-| `logs/run.txt` | the settings, then the outcome: veRL's exit code, peak memory, contraction totals, leftover snapshots |
-| `config.env` | every setting the run used |
-| `tasks/`, `tasks.parquet` | the task directories and dataset the run used |
-| `logs/memory.csv` | once a minute: the job's memory, the image store's size, containers, images and sandboxes |
-| `logs/containers.csv` | once a minute: memory per running container (podman-hpc reports one shared value; ISSUES.md #25) |
-| `contraction/events.jsonl`, `summary.json` | every pause, resume, listing, merge and finished round with a timestamp; totals and counts over time |
-| `control.jsonl` | step starts and ends, each task's idle window and graph size, fork bank warm-ups and hand-outs |
-| `state.json` | per task: comparable or not, and the paths skipped as noise |
-| `dumps/dump_*.json`, `epoch_*.json` | DUMP_ALL every `DUMP_INTERVAL` s (default 600) and at the end; and as each epoch ended |
-| `check/` | tvverify's per-dump results and its own report, `check/report.md` (the last dump also checks snapshots) |
-| `trace/` | per-lookup trace and one line per rollout, when tvverify is on |
-| `logs/` | veRL, cache server, manager, podman, sidecar, contraction, embedding service |
-| `server.out`, `client.out` | two-node job: each node's output |
+| `logs/run.txt`, `server.out`, `client.out` | the run's log and each node's output; look here first if a run failed |
+| `config.env`, `metrics.json` | every setting used; the report's numbers as data |
+| `logs/memory.csv` | memory, image store size and containers, once a minute |
+| `contraction/events.jsonl` | every contraction pause, merge and round |
+| `dumps/`, `check/` | cache dumps; tvverify's results |
 
-## Reading the results
+**Several runs side by side:**
 
-**One run: `report.md`.** It has everything about the run in one file:
+    $VERL_PY compare_runs.py $TVROOT/runs/<a> $TVROOT/runs/<b> --plot charts/
 
-1. the settings and how the run ended (veRL's exit code, peak memory, leftovers);
-2. training per epoch: reward, step time, rollout time;
-3. the testing plan's metrics per task and epoch: hit rates, time saved,
-   graph and snapshot sizes;
-4. contraction rounds;
-5. live sandboxes and memory;
-6. tvverify's findings.
+With one `tvcache` run and one `contraction` run, it also prints the testing
+plan's ratio table.
 
-It is written when training ends and again when tvverify finishes, so a run
-cut off by its time limit still has one. A run without a cache gets parts 1
-and 2. `python -m tvcache_workloads.bash.verl.stats <run>` rewrites it.
+**One task's cached commands:**
 
-**Several runs: `compare_runs.py`.** One table with the runs side by side
-(reward, step time, hit rates, manager requests, memory), charts with
-`--plot`, and, when given a run with the cache and one with contraction, the
-testing plan's ratio table. It reads each run's numbers from the same data as
-`report.md`, so the two never disagree.
+    $VERL_PY dump_tree.py $TVROOT/runs/<a> hello-world
 
-    $VERL_PY compare_runs.py $TVROOT/runs/<a> $TVROOT/runs/<b> ... --plot charts/
+Merged commands are marked `=`.
 
-`$VERL_PY dump_tree.py $TVROOT/runs/<a> hello-world` prints one task's cached
-commands, merged ones marked `=`.
-
-## Other settings
-
-Everything `run.sh` does not cover still comes from the environment (see
-`env.sh` and the top of `train_pilot.sh`): `MODEL`, `N_GPUS`,
-`SNAPSHOT_THRESHOLD` (fixed 1 s; empty for tvclient's adaptive policy),
-`CHECK_NODES`, `DUMP_INTERVAL`, `MAX_TURNS`, `SEED`, `FORK_BANK` (1), `TOP_K`
-(10), `RUN` (reuse to resume from a checkpoint; the cache restarts empty),
-`TVCACHE_VARIANT` (`combined` is the build `bootstrap.sh` clones; another name
-only if you cloned another build into `variants/` yourself).
-
-## veRL environment
-
-`VERL_PY` must be a Python with veRL 0.9.1 (the version the integration was
-written against), vLLM and torch. A conda env from NERSC's `pytorch` module
-plus `pip install verl[vllm]==0.9.1` works. `setup.sh` then installs tvclient,
-tvcache-workloads, tvverify and sentence-transformers into it.
+**Cost:** a two-node shakedown is about 0.8 node-hours. A `main20-easy-med`
+run hasn't been timed yet. Check usage with `sshare -A <project>` or Iris.
