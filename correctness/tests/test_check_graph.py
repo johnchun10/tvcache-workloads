@@ -93,3 +93,20 @@ def test_replays_that_could_not_run_are_inconclusive():
     bugs, noise, inconclusive = asyncio.run(_classify(ToyFsAdapter(), engine, findings, replays=2))
     assert [f.code for f in inconclusive] == ["replay_failed", "replay_error"]
     assert [f.code for f in bugs] == ["counter_mismatch"] and noise == []
+
+
+def test_random_file_with_steady_output_is_noise_not_a_bug():
+    """`keygen` prints "ok" every time but writes a random file, like
+    `openssl genrsa -out f`: two fresh replays reach different states, so a
+    snapshot difference there is noise. A deterministic path stays a bug."""
+    adapter = ToyFsAdapter()
+    keygen = ToyCall("keygen", "k")
+    findings = [
+        Finding("C2a", "snapshot_state_differs", "snapshot differs", "n1", (w.serialize(), keygen.serialize())),
+        Finding("C2a", "snapshot_state_differs", "snapshot differs", "n2", (w.serialize(),)),
+    ]
+    with ToyFsSandbox.isolated():
+        engine = ReplayEngine(adapter, "cg", memoize=False)
+        bugs, noise, inconclusive = asyncio.run(_classify(adapter, engine, findings, replays=2))
+    assert [f.node_id for f in noise] == ["n1"]
+    assert [f.node_id for f in bugs] == ["n2"] and inconclusive == []

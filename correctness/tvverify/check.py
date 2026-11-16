@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from tvverify.adapters.base import WorkloadAdapter
+from tvverify.digest.schema import diff_digests
 from tvverify.model.graph import GraphExport, export_task_graph, from_dumpall
 from tvverify.replay.engine import ReplayEngine
 from tvverify.testing.exact_vs_nocache import run_rollouts_vs_nocache
@@ -61,7 +62,9 @@ async def _classify(
     cache. Noise: a C1/C3 output mismatch where fresh replays of the same path
     disagree with each other (the tool is nondeterministic, so the cache
     cannot be blamed); the same for state and snapshot differences along a
-    path that replays inconsistently. Anything else is a bug."""
+    path that replays inconsistently, either in a call's output or in the
+    state it leaves (a call such as `openssl genrsa -out f` prints the same
+    thing every time but writes a random file). Anything else is a bug."""
     bugs: List[Finding] = []
     noise: List[Finding] = []
     inconclusive: List[Finding] = []
@@ -70,6 +73,15 @@ async def _classify(
         outputs = [await engine.leaf_output(path, key) for _ in range(replays)]
         compare = adapter.comparator_for(key).compare
         return not all(compare(outputs[0], o, key=key).equal for o in outputs[1:])
+
+    async def state_disagrees(path: List[str]) -> bool:
+        digests = [await engine.state_digest(path) for _ in range(replays)]
+        if digests[0] is None:  # no state_digest(): compare live sandboxes instead
+            for _ in range(replays - 1):
+                if not await engine.same_state(path, path):
+                    return True
+            return False
+        return not all(d is not None and diff_digests(digests[0], d).equal_strict for d in digests[1:])
 
     for finding in findings:
         if finding.code in INCONCLUSIVE_CODES:
@@ -90,6 +102,8 @@ async def _classify(
                 if await disagrees(path[:i], path[i]):
                     is_noise = True
                     break
+            # outputs can agree while the state does not
+            is_noise = is_noise or await state_disagrees(path)
         (noise if is_noise else bugs).append(finding)
     return bugs, noise, inconclusive
 

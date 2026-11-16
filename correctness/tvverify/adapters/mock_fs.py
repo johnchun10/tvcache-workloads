@@ -13,7 +13,9 @@ Opt-in nondeterminism (never used by the "exact" suite):
   - `stamp f` appends a fresh random token to f (stateful AND noisy: the token
     is both the output and part of the state, so value/snapshot coherence can
     be checked);
-  - `now` returns a fresh random number (stateless, noisy).
+  - `now` returns a fresh random number (stateless, noisy);
+  - `keygen f` writes a fresh random token to f but always prints "ok"
+    (stateful, noisy only in the state, like `openssl genrsa -out f`).
 """
 
 import asyncio
@@ -26,7 +28,7 @@ from tvclient.tool_call import TestToolCall, ToolCall
 
 from tvverify.digest.schema import DigestComponent, DigestPolicy, StateDigest
 
-STATEFUL_OPS = {"write", "append", "rm", "touch", "cd", "export", "tmpwrite", "stamp", "spawn"}
+STATEFUL_OPS = {"write", "append", "rm", "touch", "cd", "export", "tmpwrite", "stamp", "keygen", "spawn"}
 STATELESS_OPS = {"read", "ls", "printenv", "ps", "now", "tmpread"}
 
 
@@ -182,6 +184,9 @@ class ToyFsSandbox(Sandbox):
             key = s.path(args[0])
             s.files[key] = s.files.get(key, "") + token
             return token
+        if op == "keygen":
+            s.files[s.path(args[0])] = f"<{cls._noise.randrange(10**9)}>"
+            return "ok"
         if op == "spawn":
             s.procs.add(args[0])
             return "spawned"
