@@ -1,42 +1,52 @@
 #!/usr/bin/env bash
-# Submits a run as a heterogeneous job (hetjob.sbatch): a CPU node for the
-# containers, their snapshots, the cache server, manager, fork bank and
-# contraction, and a GPU node for veRL. No terminal needs to stay open. On a
-# login node, from any directory:
+# Submits a run as a two-node job (hetjob.sbatch): a CPU node for the
+# containers, snapshots, cache server, manager, fork bank and contraction, and
+# a GPU node for veRL. Run it on a login node; no terminal needs to stay open.
 #
-#   bash submit_hetjob.sh shakedown                                  # the preset as written
-#   CACHES="tvcache contraction" bash submit_hetjob.sh shakedown      # both, back to back in one job
-#   TIME=02:00:00 bash submit_hetjob.sh main20-easy-med --threshold 0.95
-#   SPLIT=30 TOTAL=200 bash submit_hetjob.sh main20-easy-med          # parts of SPLIT steps, chained
+#   bash submit_hetjob.sh shakedown
+#   bash submit_hetjob.sh main20-easy-med --caches "none tvcache contraction" --time 08:00:00
+#   bash submit_hetjob.sh main20-easy-med --threshold 0.97 --embedder embeddinggemma2
+#   bash submit_hetjob.sh main20-easy-med --split 30 --total 200
 #
-# Everything after the preset goes to run.sh (presets/, --cache, --epochs,
-# ...). CACHES runs the job once per cache mode, each in its own
-# $BASE-<cache> with a fresh cache server, and writes the testing plan's
-# ratio table to $BASE-compare.md when it has both tvcache and contraction.
+# Job flags (this script):
+#   --time hh:mm:ss     time limit for both nodes (default 05:00:00, in hetjob.sbatch)
+#   --caches "a b ..."  run the preset once per cache mode, back to back in one
+#                       job, each in its own <run>-<mode> with an empty cache;
+#                       with tvcache and contraction both, also <run>-compare.md
+#   --split N --total M train M steps in parts of N, one job per part, each
+#                       resuming from the previous part's checkpoint
+# Every other flag is a run.sh flag (--cache, --threshold, --epochs, ...).
 #
-# Account, QOS and time limit are set per component in hetjob.sbatch (options
-# given to sbatch on the command line would reach only the first component);
-# TIME=hh:mm:ss submits a copy of it with that limit on both components.
-#
-# With SPLIT set, part k trains to k*SPLIT steps; each later part waits for the
-# previous one (afterany, since a part that trained but timed out in tvverify
-# still left its checkpoint) and resumes from its checkpoints/. Each part has
-# its own RUN; the cache restarts empty in each part.
+# The account and QOS are the #SBATCH -A/-q lines in hetjob.sbatch (one pair
+# per node; sbatch options on the command line would reach only the first).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 [[ $# -ge 1 && "$1" != -* ]] || { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' >&2; exit 2; }
 PRESET="$1"; shift
 [[ -f "$HERE/presets/$PRESET.env" ]] || { echo "no preset '$PRESET' in $HERE/presets" >&2; exit 2; }
-bash "$HERE/run.sh" "$PRESET" "$@" --dry-run > /dev/null   # reject bad flags now, not in the queue
-CACHES="${CACHES:-}"
-SPLIT="${SPLIT-}"
-TOTAL="${TOTAL:-}"
-[[ -z "$SPLIT" || -n "$TOTAL" ]] || { echo "SPLIT needs TOTAL (all steps)" >&2; exit 2; }
+TIME="" CACHES="" SPLIT="" TOTAL="" RUN_ARGS=()
+need() { [[ $# -ge 2 ]] || { echo "$1 needs a value" >&2; exit 2; }; }
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --time)   need "$@"; TIME="$2"; shift 2 ;;
+    --caches) need "$@"; CACHES="$2"; shift 2 ;;
+    --split)  need "$@"; SPLIT="$2"; shift 2 ;;
+    --total)  need "$@"; TOTAL="$2"; shift 2 ;;
+    *)        RUN_ARGS+=("$1"); shift ;;
+  esac
+done
+[[ "$SPLIT$TOTAL" =~ ^[0-9]*$ ]] || { echo "--split and --total take a number of steps" >&2; exit 2; }
+[[ -z "$SPLIT" || -n "$TOTAL" ]] || { echo "--split needs --total (all steps)" >&2; exit 2; }
+[[ -z "$TIME" || "$TIME" =~ ^[0-9]+:[0-9]{2}:[0-9]{2}$ ]] || { echo "--time must look like hh:mm:ss (got '$TIME')" >&2; exit 2; }
+for mode in $CACHES; do
+  case "$mode" in none|tvcache|contraction) ;; *) echo "--caches: unknown cache mode '$mode'" >&2; exit 2 ;; esac
+done
+bash "$HERE/run.sh" "$PRESET" ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} --dry-run > /dev/null   # reject bad flags now, not in the queue
 SLURM_LOGS="${SLURM_LOGS:-$SCRATCH/tvcache/runs/slurm}"
 BASE="${BASE:-$SCRATCH/tvcache/runs/$(date +%Y%m%d-%H%M%S)-$PRESET-het}"
 mkdir -p "$SLURM_LOGS"
 SCRIPT="$HERE/hetjob.sbatch"
-if [[ -n "${TIME:-}" ]]; then
+if [[ -n "$TIME" ]]; then
   SCRIPT="$SLURM_LOGS/hetjob-${TIME//:/}.sbatch"
   sed "s/-t 05:00:00/-t $TIME/" "$HERE/hetjob.sbatch" > "$SCRIPT"
 fi
@@ -51,7 +61,6 @@ submit() {  # submit <run dir> <total steps or ""> <previous part's run dir or "
     sbatch "${args[@]}" "$SCRIPT" | cut -d';' -f1
 }
 
-RUN_ARGS=("$@")
 if [[ -z "$SPLIT" ]]; then
   job=$(submit "$BASE" "$TOTAL" "" "")
   echo "job $job: $PRESET ${CACHES:+(caches: $CACHES) }RUN=$BASE"

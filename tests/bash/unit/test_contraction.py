@@ -4,6 +4,7 @@ rollout's side of it, and the dump readers for a server with contraction."""
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -385,8 +386,28 @@ def test_run_sh_resolves_presets_and_flags():
     main20 = dry("main20-easy-med", "--cache", "tvcache", "--epochs", "3", "--no-verify")
     assert "tasks (20):" in main20.stdout and "main20-easy-med-tvcache" in main20.stdout
     assert "epochs 3, rollouts/task 8, tasks/batch 4" in main20.stdout and "tvverify off" in main20.stdout
-    assert "threshold" not in main20.stdout
+    assert "(threshold" not in main20.stdout
+    assert "snapshot threshold: 1.0" in main20.stdout
 
     sweep = dry("main20-easy-med", "--threshold", "0.97", "--embedder", "embeddinggemma2")
     assert "main20-easy-med-contraction-t0.97-embeddinggemma2" in sweep.stdout
     assert dry("nope").returncode == 2 and dry("shakedown", "--cache", "maybe").returncode == 2
+
+    assert "snapshot threshold: 0.5" in dry("shakedown", "--snapshot-threshold", "0.5").stdout
+    assert "snapshot threshold: adaptive" in dry("shakedown", "--snapshot-threshold", "adaptive").stdout
+    assert dry("shakedown", "--snapshot-threshold", "soon").returncode == 2
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_submit_hetjob_rejects_bad_flags_before_queueing(tmp_path):
+    """Bad job flags and bad run flags fail at once, before sbatch is called."""
+    def submit(*args):
+        env = {**os.environ, "SCRATCH": str(tmp_path)}
+        return subprocess.run(["bash", str(SCRIPTS / "submit_hetjob.sh"), "shakedown", *args],
+                              capture_output=True, text=True, env=env)
+
+    assert "hh:mm:ss" in submit("--time", "2h").stderr
+    assert "unknown cache mode 'maybe'" in submit("--caches", "none maybe").stderr
+    assert "--split needs --total" in submit("--split", "3").stderr
+    assert "unknown option: --bogus" in submit("--bogus").stderr  # passed to run.sh, which rejects it
+    assert not (tmp_path / "tvcache").exists()  # nothing was submitted

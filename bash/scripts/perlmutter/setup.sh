@@ -2,7 +2,7 @@
 # Run once on Perlmutter (a login node is fine) after bootstrap.sh, and again
 # whenever bootstrap.sh pulled new commits: builds the cache server and
 # installs the Python side into $VERL_PY's environment. veRL, vLLM and torch
-# must already be in that environment (see README.md).
+# must already be in that environment (see GUIDE.md).
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 command -v cargo >/dev/null || module load rust/stable 2>/dev/null || true
