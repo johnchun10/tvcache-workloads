@@ -4,18 +4,18 @@
 # a GPU node for veRL. Run it on a login node; no terminal needs to stay open.
 #
 #   bash submit_hetjob.sh shakedown
-#   bash submit_hetjob.sh main20-easy-med --caches "none tvcache contraction" --time 08:00:00
+#   bash submit_hetjob.sh main20-easy-med --cache all --time 08:00:00
 #   bash submit_hetjob.sh main20-easy-med --threshold 0.97 --embedder embeddinggemma2
 #   bash submit_hetjob.sh main20-easy-med --split 30 --total 200
 #
 # Job flags (this script):
 #   --time hh:mm:ss     time limit for both nodes (default 05:00:00, in hetjob.sbatch)
-#   --caches "a b ..."  run the preset once per cache mode, back to back in one
-#                       job, each in its own <run>-<mode> with an empty cache;
-#                       with tvcache and contraction both, also <run>-compare.md
+#   --cache all         none, tvcache and contraction back to back in one job,
+#                       each in its own <run>-<mode> with an empty cache, plus
+#                       <run>-compare.md (one mode: --cache none|tvcache|contraction)
 #   --split N --total M train M steps in parts of N, one job per part, each
 #                       resuming from the previous part's checkpoint
-# Every other flag is a run.sh flag (--cache, --threshold, --epochs, ...).
+# Every other flag is a run.sh flag (--threshold, --epochs, --top-k, ...).
 #
 # The account and QOS are the #SBATCH -A/-q lines in hetjob.sbatch (one pair
 # per node; sbatch options on the command line would reach only the first).
@@ -29,7 +29,7 @@ need() { [[ $# -ge 2 ]] || { echo "$1 needs a value" >&2; exit 2; }; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --time)   need "$@"; TIME="$2"; shift 2 ;;
-    --caches) need "$@"; CACHES="$2"; shift 2 ;;
+    --cache)  need "$@"; if [[ "$2" == all ]]; then CACHES="none tvcache contraction"; else RUN_ARGS+=("$1" "$2"); fi; shift 2 ;;
     --split)  need "$@"; SPLIT="$2"; shift 2 ;;
     --total)  need "$@"; TOTAL="$2"; shift 2 ;;
     *)        RUN_ARGS+=("$1"); shift ;;
@@ -38,9 +38,6 @@ done
 [[ "$SPLIT$TOTAL" =~ ^[0-9]*$ ]] || { echo "--split and --total take a number of steps" >&2; exit 2; }
 [[ -z "$SPLIT" || -n "$TOTAL" ]] || { echo "--split needs --total (all steps)" >&2; exit 2; }
 [[ -z "$TIME" || "$TIME" =~ ^[0-9]+:[0-9]{2}:[0-9]{2}$ ]] || { echo "--time must look like hh:mm:ss (got '$TIME')" >&2; exit 2; }
-for mode in $CACHES; do
-  case "$mode" in none|tvcache|contraction) ;; *) echo "--caches: unknown cache mode '$mode'" >&2; exit 2 ;; esac
-done
 bash "$HERE/run.sh" "$PRESET" ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} --dry-run > /dev/null   # reject bad flags now, not in the queue
 SLURM_LOGS="${SLURM_LOGS:-$SCRATCH/tvcache/runs/slurm}"
 BASE="${BASE:-$SCRATCH/tvcache/runs/$(date +%Y%m%d-%H%M%S)-$PRESET-het}"

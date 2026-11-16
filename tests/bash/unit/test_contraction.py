@@ -397,6 +397,10 @@ def test_run_sh_resolves_presets_and_flags():
     assert "snapshot threshold: adaptive" in dry("shakedown", "--snapshot-threshold", "adaptive").stdout
     assert dry("shakedown", "--snapshot-threshold", "soon").returncode == 2
 
+    assert "fork bank top-k 4" in dry("shakedown", "--top-k", "4").stdout
+    assert dry("shakedown", "--top-k", "many").returncode == 2
+    assert "only works with submit_hetjob.sh" in dry("shakedown", "--cache", "all").stderr
+
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 def test_submit_hetjob_rejects_bad_flags_before_queueing(tmp_path):
@@ -407,7 +411,7 @@ def test_submit_hetjob_rejects_bad_flags_before_queueing(tmp_path):
                               capture_output=True, text=True, env=env)
 
     assert "hh:mm:ss" in submit("--time", "2h").stderr
-    assert "unknown cache mode 'maybe'" in submit("--caches", "none maybe").stderr
+    assert "--cache must be none, tvcache, contraction or all" in submit("--cache", "maybe").stderr
     assert "--split needs --total" in submit("--split", "3").stderr
     assert "unknown option: --bogus" in submit("--bogus").stderr  # passed to run.sh, which rejects it
     assert not (tmp_path / "tvcache").exists()  # nothing was submitted

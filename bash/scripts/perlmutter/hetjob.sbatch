@@ -5,7 +5,7 @@
 # (veRL). Slurm starts both together. Submit it with submit_hetjob.sh, which
 # sets HERE, RUN, PRESET and the run.sh flags ($RUN/run_args).
 #
-# CACHES (from submit_hetjob.sh --caches) runs each cache mode in turn, each in
+# CACHES (set by submit_hetjob.sh --cache all) runs each cache mode in turn, each in
 # its own $RUN-<cache> with a fresh cache server (an empty graph); empty = the
 # preset's own mode, in $RUN.
 #SBATCH -J tv-het

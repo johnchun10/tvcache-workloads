@@ -2,7 +2,7 @@
 # Starts one run from a preset, with any setting overridden by a flag.
 #
 #   bash run.sh shakedown                                   # the preset as written
-#   bash run.sh main20-easy-med --cache none                # no cache at all
+#   bash run.sh main20-easy-med --cache none                # no cache at all (all three: submit_hetjob.sh --cache all)
 #   bash run.sh main20-easy-med --cache tvcache             # TVCache, no contraction
 #   bash run.sh main20-easy-med --threshold 0.97 --embedder embeddinggemma2
 #   bash run.sh shakedown --prebuild                        # login node: only build the task images
@@ -21,6 +21,7 @@
 #   --threshold X                      contraction: similarity threshold, e.g. 0.8 0.9 0.95
 #   --embedder minilm|embeddinggemma2  contraction: embedding model (or a sentence-transformers name)
 #   --budget N                         contraction: live sandboxes all contraction jobs share
+#   --top-k N                          fork bank: most used snapshots restored ahead of each step (10)
 #   --epochs N  --rollouts N  --batch N  --max-tokens N
 #   --verify | --no-verify             run tvverify on the cache afterwards, or not
 #   --tasks "a b c"                    replace the preset's task list
@@ -29,7 +30,7 @@
 #   --name LABEL                       appended to the run directory's name
 #   --prebuild                         build the task images through the manager and exit
 #   --dry-run                          print the resolved settings and exit
-# Everything else train_pilot.sh reads (MODEL, N_GPUS, RUN, TVCACHE_VARIANT,
+# Everything else train_pilot.sh reads (MODEL, N_GPUS, FORK_BANK, RUN, TVCACHE_VARIANT,
 # ...) comes from the environment.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -50,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --threshold)  need "$@"; THRESHOLD="$2"; shift 2 ;;
     --embedder)   need "$@"; EMBEDDER="$2"; shift 2 ;;
     --budget)     need "$@"; BUDGET="$2"; shift 2 ;;
+    --top-k)      need "$@"; TOP_K="$2"; shift 2 ;;
     --epochs)     need "$@"; EPOCHS="$2"; shift 2 ;;
     --rollouts)   need "$@"; ROLLOUTS="$2"; shift 2 ;;
     --batch)      need "$@"; BATCH="$2"; shift 2 ;;
@@ -67,7 +69,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$CACHE" in none|tvcache|contraction) ;; *) echo "--cache must be none, tvcache or contraction (got '$CACHE')" >&2; exit 2 ;; esac
+case "$CACHE" in
+  none|tvcache|contraction) ;;
+  all) echo "--cache all only works with submit_hetjob.sh, which runs the three modes back to back in one job" >&2; exit 2 ;;
+  *) echo "--cache must be none, tvcache, contraction or all (got '$CACHE')" >&2; exit 2 ;;
+esac
+TOP_K="${TOP_K:-10}"
+[[ "$TOP_K" =~ ^[0-9]+$ ]] || { echo "--top-k takes a number (got '$TOP_K')" >&2; exit 2; }
 case "$MODE" in train|sample|prebuild) ;; *) echo "--mode must be train or sample (got '$MODE')" >&2; exit 2 ;; esac
 [[ -z "${SNAPSHOT_THRESHOLD:-}" || "$SNAPSHOT_THRESHOLD" =~ ^[0-9]*\.?[0-9]+$ ]] || { echo "--snapshot-threshold must be seconds or 'adaptive' (got '$SNAPSHOT_THRESHOLD')" >&2; exit 2; }
 TASKS="$(echo $TASKS)"   # one line, single spaces
@@ -78,7 +86,7 @@ LABEL="$PRESET-$CACHE"
 [[ "$MODE" == train ]] || LABEL="$LABEL-$MODE"
 [[ -z "$NAME" ]] || LABEL="$LABEL-$NAME"
 
-export PRESET TASKS CACHE THRESHOLD EMBEDDER BUDGET EPOCHS ROLLOUTS BATCH MAX_TOKENS VERIFY MODE
+export TOP_K PRESET TASKS CACHE THRESHOLD EMBEDDER BUDGET EPOCHS ROLLOUTS BATCH MAX_TOKENS VERIFY MODE
 export RUN_LABEL="$LABEL"
 [[ -z "${SNAPSHOT_THRESHOLD+set}" ]] || export SNAPSHOT_THRESHOLD
 
@@ -86,6 +94,6 @@ echo "preset $PRESET -> $LABEL"
 echo "  tasks ($(echo "$TASKS" | wc -w | tr -d ' ')): $TASKS"
 echo "  cache: $CACHE$([[ "$CACHE" == contraction ]] && echo " (threshold $THRESHOLD, embedder $EMBEDDER, budget $BUDGET sandboxes)")"
 echo "  epochs $EPOCHS, rollouts/task $ROLLOUTS, tasks/batch $BATCH, max tokens/rollout $MAX_TOKENS, tvverify $([[ "$VERIFY" == 1 ]] && echo on || echo off), mode $MODE"
-snap="${SNAPSHOT_THRESHOLD-1.0}"; echo "  snapshot threshold: ${snap:-adaptive}"
+snap="${SNAPSHOT_THRESHOLD-1.0}"; echo "  snapshot threshold: ${snap:-adaptive}$([[ "$CACHE" == none ]] || echo ", fork bank top-k $TOP_K")"
 [[ "$DRY_RUN" == 1 ]] && exit 0
 exec bash "$HERE/train_pilot.sh"

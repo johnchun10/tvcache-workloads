@@ -31,7 +31,7 @@ For a new set of tasks:
 
     bash run.sh shakedown --prebuild                  # do the images build?
     bash submit_hetjob.sh shakedown                   # small run: does every part work?
-    bash submit_hetjob.sh main20-easy-med --caches "none tvcache contraction" --time 08:00:00
+    bash submit_hetjob.sh main20-easy-med --cache all --time 08:00:00
 
 | Preset | Tasks | Settings |
 |---|---|---|
@@ -42,21 +42,19 @@ Presets are in `presets/`. Any flag below overrides them.
 
 ### Flags
 
-The job flags only exist on `submit_hetjob.sh`. Every other flag is passed
-on to `run.sh`.
+`submit_hetjob.sh` takes every flag. `run.sh` takes all of them except
+`--time`, `--split`/`--total` and `--cache all`, which only make sense for a
+queued job.
 
-| Job flag | Meaning |
+| Flag | Meaning |
 |---|---|
+| `--cache none\|tvcache\|contraction\|all` | no cache / TVCache / TVCache with graph contraction / all three back to back in one job, each with an empty cache, plus `<run>-compare.md` comparing them |
 | `--time hh:mm:ss` | time limit for both nodes (default 05:00:00) |
-| `--caches "a b ..."` | run the preset once per cache mode, back to back in one job, each with an empty cache. With `tvcache` and `contraction` both listed, it also writes `<run>-compare.md` |
 | `--split N --total M` | train M steps in parts of N, one job per part, each resuming from the previous part's checkpoint. The cache starts empty in each part |
-
-| Run flag | Meaning |
-|---|---|
-| `--cache none\|tvcache\|contraction` | no cache / TVCache / TVCache with graph contraction |
 | `--threshold X` | contraction: how similar two commands must be to be compared for merging (table below) |
 | `--embedder minilm\|embeddinggemma2` | contraction: the model that scores command similarity |
 | `--budget N` | contraction: sandboxes it may use at once (32) |
+| `--top-k N` | fork bank: most-used snapshots restored ahead of each step (10) |
 | `--snapshot-threshold S\|adaptive` | snapshot after commands slower than S seconds (1.0), or tvclient's adaptive policy (rarely snapshots) |
 | `--epochs N`, `--rollouts N`, `--batch N` | epochs, rollouts per task, tasks per training step |
 | `--max-tokens N` | tokens per rollout after the prompt (2048) |
@@ -67,7 +65,7 @@ on to `run.sh`.
 | `--prebuild`, `--dry-run` | build the task images and exit / print the settings and exit |
 
 Rarely changed settings come from the environment: `MODEL`, `N_GPUS` (1),
-`MAX_TURNS` (30), `SEED` (42), `FORK_BANK` (1), `TOP_K` (10), `CHECK_NODES`
+`MAX_TURNS` (30), `SEED` (42), `FORK_BANK` (1; 0 turns prewarming off), `CHECK_NODES`
 (20), `DUMP_INTERVAL` (600 s), and `RUN` (reuse a run directory to resume from
 its checkpoint). See `env.sh` and the top of `train_pilot.sh`. The Slurm
 account and QOS are the `#SBATCH -A/-q` lines in `hetjob.sbatch`, one pair
@@ -139,7 +137,7 @@ It is written when training ends, and again after tvverify. To rebuild it:
   `state.json`), and a task that can't be compared is never contracted.
 - **Preempted:** the round stopped because a rollout came back.
 - **Fork bank:** TVCache's prewarming. While one step runs, it starts
-  containers for the next step's tasks and restores the `TOP_K` most-used
+  containers for the next step's tasks and restores the `--top-k` most-used
   snapshots.
 
 **Correctness (tvverify)**
