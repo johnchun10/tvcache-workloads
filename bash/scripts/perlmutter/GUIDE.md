@@ -1,44 +1,39 @@
 # One-time setup, and fixes for known errors
 
 Do all of this on a login node, where it's free. Everything installs under
-your own `$SCRATCH/tvcache` and `~/.local/bin`, `~/bin`, so teammates don't
-share or overwrite each other's setup. To run and read results, see
-`README.md`. `ISSUES.md` has the history of what broke during bring-up.
+your own `$SCRATCH/tvcache`, so teammates don't share or overwrite each
+other's setup, and your own uv, docker-compose, conda or Python installs are
+left alone. To run and read results, see `README.md`. `ISSUES.md` has the
+history of what broke during bring-up.
 
 ## Setup
 
-**1. Tools**
-
-    curl -LsSf https://astral.sh/uv/install.sh | sh          # uv, into ~/.local/bin
-    mkdir -p ~/bin && curl -sSfL -o ~/bin/docker-compose \
-      https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64
-    chmod +x ~/bin/docker-compose                             # podman-hpc has no compose of its own
-
-**2. veRL environment** (about 15 minutes)
-
-    module load conda
-    conda create -q -y -p $SCRATCH/tvcache/verl-env python=3.12
-    $SCRATCH/tvcache/verl-env/bin/python -m pip install --upgrade pip
-    $SCRATCH/tvcache/verl-env/bin/python -m pip install "verl[vllm]==0.9.1"
-
-**3. Code, servers, models**
+**1. Code and everything it needs**
 
     git clone https://github.com/johnchun10/tvcache-workloads.git $SCRATCH/tvcache/tvcache-workloads
     cd $SCRATCH/tvcache/tvcache-workloads/bash/scripts/perlmutter
     bash bootstrap.sh    # clones main of our four forks into $SCRATCH/tvcache
-    bash setup.sh        # builds the cache server, installs the Python side, downloads Qwen2.5-1.5B and the embedders
+    bash setup.sh        # about 20 minutes the first time
 
-Expect `python side ok: verl 0.9.1 ...` and `embedder ... ok` for each
-embedder. Run both scripts again whenever `main` changes.
+`setup.sh` installs whatever is missing and skips the rest:
+- uv and docker-compose, into `$SCRATCH/tvcache/bin`. The container manager
+  runs on uv. podman-hpc runs the containers, but it has no compose, and every
+  task is a compose file.
+- the veRL environment (`verl-env`, conda with veRL 0.9.1), and the
+  embedders' environment (`embed-env`)
+- the cache server, the Python packages, Qwen2.5-1.5B and the embedders
 
-**4. Podman probe**
+Expect `tools ok`, `python side ok: verl 0.9.1 ...`, and `embedder ... ok`
+for each embedder. Run both scripts again whenever `main` changes.
+
+**2. Podman probe**
 
     bash probe_podman.sh
 
 Every line must say PASS. That matters most for `docker API socket` and `SDK
 lists the probe container`; nothing works without them.
 
-**5. Shakedown**
+**3. Shakedown**
 
     bash run.sh shakedown --prebuild && bash submit_hetjob.sh shakedown
 
@@ -55,8 +50,7 @@ If the two nodes don't seem to start or reach each other,
 - **Images are node-local:** a job builds each task image again on its own
   node. Prebuilding only finds the tasks that don't build.
 - **Scratch purge:** files on `$SCRATCH` that go unused for about 8 weeks are
-  deleted. If `verl-env` or the model goes missing, run step 2 and
-  `setup.sh` again.
+  deleted. If anything goes missing, run `setup.sh` again.
 - **Tasks that never build:** `fix-git` (its GitHub repository is gone) and
   `accelerate-maximal-square` (its uids are out of rootless podman's range).
   Neither is in a preset.

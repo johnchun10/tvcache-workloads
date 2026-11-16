@@ -39,6 +39,9 @@ done
 [[ -z "$SPLIT" || -n "$TOTAL" ]] || { echo "--split needs --total (all steps)" >&2; exit 2; }
 [[ -z "$TIME" || "$TIME" =~ ^[0-9]+:[0-9]{2}:[0-9]{2}$ ]] || { echo "--time must look like hh:mm:ss (got '$TIME')" >&2; exit 2; }
 bash "$HERE/run.sh" "$PRESET" ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} --dry-run > /dev/null   # reject bad flags now, not in the queue
+tools="${TVROOT:-$SCRATCH/tvcache}/bin"
+[[ -x "$tools/uv" && -x "${COMPOSE_CMD:-$tools/docker-compose}" ]] ||
+  { echo "uv or docker-compose missing from $tools: run setup.sh (it installs them there)" >&2; exit 1; }
 SLURM_LOGS="${SLURM_LOGS:-$SCRATCH/tvcache/runs/slurm}"
 BASE="${BASE:-$SCRATCH/tvcache/runs/$(date +%Y%m%d-%H%M%S)-$PRESET-het}"
 mkdir -p "$SLURM_LOGS"

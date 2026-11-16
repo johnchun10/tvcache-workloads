@@ -14,7 +14,10 @@
 # needs a tvclient for its base classes. CACHE=contraction needs a build with
 # contraction (combined).
 export TVROOT="${TVROOT:-$SCRATCH/tvcache}"
-export PATH="$HOME/.local/bin:$HOME/bin:$PATH"           # uv, docker-compose (batch jobs too)
+export PATH="$TVROOT/bin:$PATH"                          # uv, docker-compose from setup.sh, ahead of any of your own
+# Keep packages from `pip install --user` and module-set PYTHONPATHs out of
+# veRL's and the embedder's environments (PYTHONPATH is set below).
+export PYTHONNOUSERSITE=1 PIP_USER=0
 export CACHE="${CACHE:-tvcache}"
 export TVCACHE_VARIANT="${TVCACHE_VARIANT:-combined}"
 if [[ "$TVCACHE_VARIANT" == nocache ]]; then CACHE=none; TVCACHE_VARIANT=main; fi   # the old spelling
@@ -30,7 +33,7 @@ export EMBED_PY="${EMBED_PY:-$TVROOT/embed-env/bin/python}"                    #
 export CONTAINER_CLI="${CONTAINER_CLI:-podman-hpc}"
 export PODMAN_SOCKET="${PODMAN_SOCKET:-${XDG_RUNTIME_DIR:-/tmp/$USER}/tvcache-podman.sock}"
 export DOCKER_HOST="${DOCKER_HOST:-unix://$PODMAN_SOCKET}"
-export COMPOSE_CMD="${COMPOSE_CMD:-$HOME/bin/docker-compose}"
+export COMPOSE_CMD="${COMPOSE_CMD:-$TVROOT/bin/docker-compose}"
 # compose v2 builds through a BuildKit container, which rootless podman-hpc
 # refuses (crun cannot create /sys/fs/cgroup/docker). The classic builder goes
 # through the podman API instead.
@@ -60,8 +63,10 @@ export XDG_CACHE_HOME="$TVROOT/cache" HF_HOME="$TVROOT/cache/huggingface"
 export VLLM_CACHE_ROOT="$TVROOT/cache/vllm" TRITON_CACHE_DIR="$TVROOT/cache/triton"
 export TORCHINDUCTOR_CACHE_DIR="$TVROOT/cache/inductor" MPLCONFIGDIR="$TVROOT/cache/matplotlib" CUDA_CACHE_PATH="$TVROOT/cache/nv"
 mkdir -p "$HF_HOME" "$VLLM_CACHE_ROOT" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$MPLCONFIGDIR"
-# The variant's tvclient wins over any installed one, in this shell and in Ray workers.
-export PYTHONPATH="$(variant_dir)/tvclient${PYTHONPATH:+:$PYTHONPATH}"
+# The variant's tvclient wins over any installed one, in this shell and in Ray
+# workers. Set, not prepended: a PYTHONPATH from your shell or a module would
+# mix other packages into the envs.
+export PYTHONPATH="$(variant_dir)/tvclient"
 
 wait_for_port() {  # wait_for_port PORT SECONDS NAME [HOST]
   local host="${4:-127.0.0.1}"

@@ -96,4 +96,7 @@ echo "  cache: $CACHE$([[ "$CACHE" == contraction ]] && echo " (threshold $THRES
 echo "  epochs $EPOCHS, rollouts/task $ROLLOUTS, tasks/batch $BATCH, max tokens/rollout $MAX_TOKENS, tvverify $([[ "$VERIFY" == 1 ]] && echo on || echo off), mode $MODE"
 snap="${SNAPSHOT_THRESHOLD-1.0}"; echo "  snapshot threshold: ${snap:-adaptive}$([[ "$CACHE" == none ]] || echo ", fork bank top-k $TOP_K")"
 [[ "$DRY_RUN" == 1 ]] && exit 0
+tools="${TVROOT:-$SCRATCH/tvcache}/bin"
+[[ -x "$tools/uv" && -x "${COMPOSE_CMD:-$tools/docker-compose}" ]] ||
+  { echo "uv or docker-compose missing from $tools: run setup.sh (it installs them there)" >&2; exit 1; }
 exec bash "$HERE/train_pilot.sh"

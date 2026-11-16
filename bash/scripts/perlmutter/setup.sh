@@ -1,10 +1,45 @@
 #!/usr/bin/env bash
-# Run once on Perlmutter (a login node is fine) after bootstrap.sh, and again
-# whenever bootstrap.sh pulled new commits: builds the cache server and
-# installs the Python side into $VERL_PY's environment. veRL, vLLM and torch
-# must already be in that environment (see GUIDE.md).
+# Run on a login node after bootstrap.sh, and again whenever bootstrap.sh
+# pulled new commits. Installs what is missing and skips what is there:
+#   $TVROOT/bin/{uv,docker-compose}  the manager runs on uv; podman-hpc has no compose
+#   $TVROOT/verl-env                 conda env with veRL 0.9.1 (about 15 min the first time)
+#   $TVROOT/embed-env                the embedding models (they need a newer transformers)
+# and builds the cache server and downloads the models. Everything goes under
+# $TVROOT; your own uv, docker-compose, conda or Python installs are not used
+# or changed (env.sh puts $TVROOT/bin first on PATH).
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
+
+UV_VERSION=0.13.8 COMPOSE_VERSION=v2.29.7
+mkdir -p "$TVROOT/bin"
+if [[ ! -x "$TVROOT/bin/uv" ]]; then
+  # The release tarball, not the install script: the script edits shell rc
+  # files and leaves a non-executable `env` next to uv (ISSUES.md #27).
+  curl -sSfL "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-x86_64-unknown-linux-gnu.tar.gz" |
+    tar -xz -C "$TVROOT/bin" --strip-components=1
+fi
+if [[ ! -x "$COMPOSE_CMD" ]]; then
+  [[ "$COMPOSE_CMD" == "$TVROOT/bin/docker-compose" ]] || { echo "COMPOSE_CMD=$COMPOSE_CMD does not exist" >&2; exit 1; }
+  curl -sSfL -o "$COMPOSE_CMD.part" \
+    "https://github.com/docker/compose/releases/download/$COMPOSE_VERSION/docker-compose-linux-x86_64"
+  chmod +x "$COMPOSE_CMD.part" && mv "$COMPOSE_CMD.part" "$COMPOSE_CMD"
+fi
+echo "tools ok: $("$TVROOT/bin/uv" --version), docker-compose $("$COMPOSE_CMD" version --short)"
+
+if [[ ! -x "$VERL_PY" ]]; then
+  [[ "$VERL_PY" == "$TVROOT/verl-env/bin/python" ]] || { echo "VERL_PY=$VERL_PY does not exist" >&2; exit 1; }
+  command -v conda >/dev/null || module load conda 2>/dev/null || true
+  command -v conda >/dev/null || { echo "conda missing: module load conda, then run this again" >&2; exit 1; }
+  # conda-forge only, so a personal ~/.condarc or the defaults channel's terms
+  # prompt cannot change or stop the install; package cache on scratch, not $HOME.
+  CONDA_PKGS_DIRS="$TVROOT/cache/conda-pkgs" \
+    conda create -q -y -p "$TVROOT/verl-env" --override-channels -c conda-forge python=3.12
+fi
+if ! "$VERL_PY" -c "import verl, vllm" 2>/dev/null; then
+  "$VERL_PY" -m pip install -q --upgrade pip
+  "$VERL_PY" -m pip install "verl[vllm]==0.9.1"
+fi
+"$VERL_PY" -c "import verl, sys; v = verl.__version__; v == '0.9.1' or print(f'warning: VERL_PY has verl {v}; the integration was written against 0.9.1', file=sys.stderr)"
 command -v cargo >/dev/null || module load rust/stable 2>/dev/null || true
 command -v cargo >/dev/null || { echo "cargo missing: curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path" >&2; exit 1; }
 [[ -d "$(variant_dir)/tvclient" ]] || { echo "no $(variant_dir)/tvclient; run bootstrap.sh" >&2; exit 1; }
@@ -38,5 +73,4 @@ echo "model at $MODEL"
 "$EMBED_PY" "$TVROOT/tvcache-workloads/src/tvcache_workloads/bash/embedding.py" check ||
   echo "an embedder cannot load (see FAILED above); a run that picks it stops at startup"
 
-mkdir -p "$HOME/bin"
-[[ -x "$COMPOSE_CMD" ]] || echo "next: put a docker-compose binary at $COMPOSE_CMD (github.com/docker/compose releases, linux-x86_64)"
+echo "setup done; next: bash probe_podman.sh"
