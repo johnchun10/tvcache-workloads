@@ -54,6 +54,15 @@ def _sort_runs(prefix: str) -> Callable[[str], str]:
 
 _MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
 _DAYS = "Mon|Tue|Wed|Thu|Fri|Sat|Sun"
+# The modification time in a long `ls` line ("Nov 16 06:50", "Nov 16  2025",
+# or --time-style=long-iso "2026-11-16 06:50"). A file a rollout created gets
+# the time of that run, so a replay hours later never prints the same one.
+# Everything else on the line (type, mode, links, owner, group, size, name)
+# still has to match.
+_LS_LONG_DATE = (
+    r"^([bcdlps-][rwxsStT-]{9}[.+@]?\s+\d+\s+\S+\s+\S+\s+(?:\d+,\s*)?[\d.]+[KMGTP]?)\s+"
+    rf"(?:(?:{_MONTHS})\s+\d{{1,2}}\s+(?:\d{{1,2}}:\d{{2}}|\d{{4}})|\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}})(?=\s)"
+)
 
 DEFAULT_RULES: List[Rule] = [
     ("ansi", _sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "")),
@@ -71,6 +80,7 @@ DEFAULT_RULES: List[Rule] = [
         "date_default",
         _sub(rf"\b(?:{_DAYS}) (?:{_MONTHS}) +\d{{1,2}} \d{{2}}:\d{{2}}:\d{{2}}(?: [A-Z]{{3,5}})? \d{{4}}", "<TS>"),
     ),
+    ("ls_long_date", _sub(_LS_LONG_DATE, r"\1 <MTIME>", re.M)),
     ("duration", _sub(r"\bin \d+(?:\.\d+)?s\b", "in <T>s")),
     ("time_builtin", _sub(r"\b(real|user|sys)\s+\d+m\d+(?:\.\d+)?s", r"\1 <T>")),
     ("job_pid", _sub(r"(?<=\[\d\] )\d+\b", "<PID>")),

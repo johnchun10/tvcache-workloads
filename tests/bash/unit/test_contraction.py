@@ -381,7 +381,7 @@ def test_run_sh_resolves_presets_and_flags():
     assert shakedown.returncode == 0, shakedown.stderr
     assert "tasks (2): hello-world openssl-selfsigned-cert" in shakedown.stdout
     assert "cache: contraction (threshold 0.9, embedder minilm, budget 32 sandboxes)" in shakedown.stdout
-    assert "epochs 2, rollouts/task 4, tasks/batch 1, max tokens/rollout 2048" in shakedown.stdout
+    assert "epochs 2, rollouts/task 4, tasks/batch 1, max tokens/rollout 4096" in shakedown.stdout
 
     main20 = dry("main20-easy-med", "--cache", "tvcache", "--epochs", "3", "--no-verify")
     assert "tasks (20):" in main20.stdout and "main20-easy-med-tvcache" in main20.stdout

@@ -47,7 +47,10 @@ class TvcacheSyncTrainer(PPOTrainerSync):
             return next(self.train_dataloader_it)
 
     def _tv_epoch(self) -> int:
-        return (self.global_steps - 1) // len(self.train_dataloader)
+        # steps_per_epoch is veRL's own count (dataset size // train_batch_size).
+        # Not len(train_dataloader): the sync trainer fetches one prompt per
+        # dataloader batch, so that is the number of tasks, not of steps.
+        return (self.global_steps - 1) // max(1, self.steps_per_epoch)
 
     def _fetch_one_gen_batch(self):
         if self._tv_next is None:

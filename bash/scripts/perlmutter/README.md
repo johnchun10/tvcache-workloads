@@ -57,14 +57,16 @@ queued job.
 | `--top-k N` | fork bank: most-used snapshots restored ahead of each step (10) |
 | `--snapshot-threshold S\|adaptive` | snapshot after commands slower than S seconds (1.0), or tvclient's adaptive policy (rarely snapshots) |
 | `--epochs N`, `--rollouts N`, `--batch N` | epochs, rollouts per task, tasks per training step |
-| `--max-tokens N` | tokens per rollout after the prompt (2048) |
+| `--max-tokens N` | tokens per rollout after the prompt, model output plus tool output (4096) |
 | `--tasks "a b c"` | replace the preset's task list |
 | `--mode sample` | rollouts only, no training |
 | `--no-verify` | skip tvverify. This also turns off the trace, so `report.md` then has no hit rates |
 | `--name LABEL` | added to the run directory's name |
 | `--prebuild`, `--dry-run` | build the task images and exit / print the settings and exit |
 
-Rarely changed settings come from the environment: `MODEL`, `N_GPUS` (1),
+The model is Qwen3.5-4B, with thinking off and sampled at temperature 1.0.
+Rarely changed settings come from the environment: `MODEL`, `N_GPUS` (4; the
+model does not fit on fewer 40 GB GPUs), `THINKING` (0), `TEMPERATURE` (1.0),
 `MAX_TURNS` (30), `SEED` (42), `FORK_BANK` (1; 0 turns prewarming off), `CHECK_NODES`
 (20), `DUMP_INTERVAL` (600 s), and `RUN` (reuse a run directory to resume from
 its checkpoint). See `env.sh` and the top of `train_pilot.sh`. The Slurm

@@ -21,7 +21,8 @@ history of what broke during bring-up.
   task is a compose file.
 - the veRL environment (`verl-env`, conda with veRL 0.9.1), and the
   embedders' environment (`embed-env`)
-- the cache server, the Python packages, Qwen2.5-1.5B and the embedders
+- the cache server, the Python packages, Qwen3.5-4B (about 10 GB) and the
+  embedders
 
 Expect `tools ok`, `python side ok: verl 0.9.1 ...`, and `embedder ... ok`
 for each embedder. Run both scripts again whenever `main` changes.

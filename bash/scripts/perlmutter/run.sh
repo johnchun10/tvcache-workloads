@@ -14,7 +14,7 @@
 #   bash submit_hetjob.sh main20-easy-med [flags]
 # Called directly inside a GPU allocation, this script runs everything on that
 # one node, e.g.
-#   sbatch -q shared -C gpu -G 2 -c 64 -t 02:00:00 -A <project> --wrap "bash run.sh shakedown"
+#   sbatch -q regular -C gpu -N 1 -G 4 -c 128 --mem=0 -t 02:00:00 -A <project> --wrap "bash run.sh shakedown"
 #
 # Flags:
 #   --cache none|tvcache|contraction   no cache / TVCache / TVCache with graph contraction
@@ -80,6 +80,9 @@ case "$MODE" in train|sample|prebuild) ;; *) echo "--mode must be train or sampl
 [[ -z "${SNAPSHOT_THRESHOLD:-}" || "$SNAPSHOT_THRESHOLD" =~ ^[0-9]*\.?[0-9]+$ ]] || { echo "--snapshot-threshold must be seconds or 'adaptive' (got '$SNAPSHOT_THRESHOLD')" >&2; exit 2; }
 TASKS="$(echo $TASKS)"   # one line, single spaces
 [[ -n "$TASKS" ]] || { echo "the preset has no TASKS" >&2; exit 2; }
+# veRL splits each training step's rollouts evenly over its GPUs (train_pilot.sh: N_GPUS).
+[[ "$MODE" != train ]] || (( (BATCH * ROLLOUTS) % ${N_GPUS:-4} == 0 )) ||
+  { echo "--batch x --rollouts ($BATCH x $ROLLOUTS) must be a multiple of the ${N_GPUS:-4} GPUs veRL trains on (N_GPUS)" >&2; exit 2; }
 
 LABEL="$PRESET-$CACHE"
 [[ "$CACHE" == contraction ]] && LABEL="$LABEL-t$THRESHOLD-$EMBEDDER"
