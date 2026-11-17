@@ -54,6 +54,7 @@ ROLLOUTS="${ROLLOUTS:-4}"              # GRPO group size (the paper: 8)
 BATCH="${BATCH:-4}"                    # tasks per step (the paper's 4)
 MAX_TOKENS="${MAX_TOKENS:-4096}"       # tokens per rollout after the prompt (model output plus tool output)
 MAX_TURNS="${MAX_TURNS:-30}"           # tool calls per rollout
+COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-30}" # seconds before a command counts as hung (the slowest real one so far: 10 s)
 VERIFY="${VERIFY:-1}"                  # 1 = tvverify check-graph on the dumps afterwards
 CHECK_NODES="${CHECK_NODES:-20}"       # tvverify nodes replayed per task
 THRESHOLD="${THRESHOLD:-0.9}"          # contraction: similarity threshold
@@ -70,6 +71,7 @@ case "$ROLE" in all|server|client) ;; *) echo "ROLE must be all, server or clien
 [[ "$MODE" != prebuild || "$ROLE" == all ]] || { echo "MODE=prebuild runs with ROLE=all" >&2; exit 2; }
 mkdir -p "$RUN/logs"
 export TVCACHE_NAMESPACE="$(basename "$RUN")"   # a fresh trie per run
+export TVCACHE_COMMAND_TIMEOUT="$COMMAND_TIMEOUT"
 # Fixed snapshot threshold (seconds of un-snapshotted runtime), so misses go
 # through the restore path often. Empty = tvclient's adaptive policy, which
 # took 4 snapshots in 686 commands in the sampling test.
@@ -153,7 +155,7 @@ fi
 } | tee -a "$RUN/logs/run.txt"
 if [[ "$ROLE" != client ]]; then
   for name in PRESET MODE CACHE TVCACHE_VARIANT THRESHOLD EMBEDDER BUDGET FORK_BANK TOP_K EPOCHS ROLLOUTS BATCH MAX_TOKENS \
-              MAX_TURNS VERIFY CHECK_NODES N_GPUS MODEL THINKING TEMPERATURE SEED TASKS_ROOT TASK_NAMES TVCACHE_SNAPSHOT_THRESHOLD; do
+              MAX_TURNS COMMAND_TIMEOUT VERIFY CHECK_NODES N_GPUS MODEL THINKING TEMPERATURE SEED TASKS_ROOT TASK_NAMES TVCACHE_SNAPSHOT_THRESHOLD; do
     printf '%s=%q\n' "$name" "${!name-}"
   done > "$RUN/config.env"
 fi

@@ -5,7 +5,7 @@ returns the whole terminal history (for forked terminals, prefixed with the
 parent's history). To get one command's output, the sandbox runs
 
     1. a BEGIN marker command,
-    2. the user's command, sent unchanged,
+    2. the user's command (as sandbox.shell_line types it),
     3. an END marker command,
 
 as three separate blocking /execute calls and keeps the text between the two

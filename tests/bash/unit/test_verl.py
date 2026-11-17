@@ -332,3 +332,49 @@ def test_control_port_hands_the_executor_the_sidecars_fork_bank(monkeypatch):
     session_module.make_session("t", settings)
     session_module.make_session("u", settings)
     assert len(banks) == 2 and isinstance(banks[0], RemoteForkGenerator) and banks[0] is banks[1]  # one per process
+
+
+def test_a_timed_out_command_ends_the_trajectory_without_replaying_it():
+    # Seen in training: every later call and the tests replayed the hung
+    # command and waited out its timeout again.
+    from tvcache_workloads.bash.manager_client import CommandTimeout
+    from tvcache_workloads.bash.verl.session import AFTER_TIMEOUT, NOT_TESTED
+
+    class Executor:
+        def __init__(self):
+            self.calls, self.tests, self.closed = [], 0, False
+
+        async def lookup_or_execute(self, history):
+            self.calls.append([c.command for c in history])
+            if history[-1].command == "cat":
+                raise CommandTimeout("/execute", 504, '{"error":"Command timed out after 30.0 seconds"}')
+            return f"ran {history[-1].command}"
+
+        async def test(self, history):
+            self.tests += 1
+            return json.dumps({"passed": True})
+
+        async def close(self):
+            self.closed = True
+
+    session = RolloutSession("t", Executor())
+
+    async def go():
+        return [await session.run(c) for c in ("cd /app", "cat", "ls", "pwd")], await session.finish()
+
+    outputs, test = asyncio.run(go())
+    assert outputs[0] == "ran cd /app"
+    assert outputs[1].startswith("Failed to execute: CommandTimeout")
+    assert outputs[2] == outputs[3] == AFTER_TIMEOUT
+    assert session.executor.calls == [["cd /app"], ["cd /app", "cat"]]  # nothing ran after the timeout
+    assert (session.timed_out, session.failed_calls, len(session.history)) == (True, 3, 2)
+    assert test == NOT_TESTED and session.executor.tests == 0 and session.executor.closed
+    # the reward is what a failed test gives: the model called the tool, the task is not solved
+    score = reward.compute_score("terminal_bench", "", "", {"tb_tool_calls": len(session.history), "tb_test": test})
+    assert (score["score"], score["passed"]) == (0.0, 0.0)
+
+
+def test_the_command_timeout_comes_from_the_environment(monkeypatch):
+    assert CacheSettings().command_timeout_sec == 30.0
+    monkeypatch.setenv("TVCACHE_COMMAND_TIMEOUT", "45")
+    assert CacheSettings.from_config({}).command_timeout_sec == 45.0

@@ -43,7 +43,7 @@ OUTCOME_PREFIXES = ("veRL exited", "peak memory", "snapshot images left", "conta
                     "fork bank: off", "no cache:", "tvverify: skipped", "state check:")
 SETTINGS = ("PRESET", "MODE", "CACHE", "THRESHOLD", "EMBEDDER", "BUDGET", "FORK_BANK", "TOP_K", "EPOCHS",
             "ROLLOUTS", "BATCH", "MAX_TOKENS", "MAX_TURNS", "SEED", "VERIFY", "TVCACHE_SNAPSHOT_THRESHOLD",
-            "MODEL", "THINKING", "TEMPERATURE", "N_GPUS")
+            "MODEL", "THINKING", "TEMPERATURE", "N_GPUS", "COMMAND_TIMEOUT")
 
 
 def read_jsonl(paths: Iterable[Path]) -> List[dict]:
