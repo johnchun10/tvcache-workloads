@@ -415,3 +415,61 @@ def test_submit_hetjob_rejects_bad_flags_before_queueing(tmp_path):
     assert "--split needs --total" in submit("--split", "3").stderr
     assert "unknown option: --bogus" in submit("--bogus").stderr  # passed to run.sh, which rejects it
     assert not (tmp_path / "tvcache").exists()  # nothing was submitted
+
+
+def test_dump_tree_reads_each_epochs_graphs(tmp_path, capsys, monkeypatch):
+    """dumps/epoch_NNN.json: --csv lists every node of every epoch with the
+    epoch that first ran it, and --epoch marks that epoch's new commands."""
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import dump_tree
+    finally:
+        sys.path.remove(str(SCRIPTS))
+
+    def node(calls, inserted_at, children=(), sandbox_id=None, hits=0):
+        return {"children": list(children), "sandbox_id": sandbox_id, "inserted_at_seconds": inserted_at,
+                "tool_calls": {call: {"value": "out", "runtime": 4} for call in calls},
+                "number_of_cache_hits": hits, "number_of_lpm_hits": 0}
+
+    def graph(*children):
+        return {"t::run": {"root": node([], 0, children), "number_of_nodes": len(list(dump_tree.nodes_of(node([], 0, children))))}}
+
+    test_call = '{"TV_CACHE_TOOL_TYPE": "TESTING TOOL"}'
+    first = graph(node(['{"command": "ls"}'], 100, [node([test_call], 110)], hits=1))
+    # Epoch 1 reruns ls (a hit), adds pwd under it and a second first command, merged from two.
+    second = graph(
+        node(['{"command": "ls"}'], 100, [node([test_call], 110), node(['{"command": "pwd"}'], 200)], sandbox_id="snap-1", hits=3),
+        node(['{"command": "cd /b"}', '{"command": "cd /a"}'], 210),
+    )
+    dumps = tmp_path / "dumps"
+    dumps.mkdir()
+    (dumps / "epoch_000.json").write_text(json.dumps(first))
+    (dumps / "epoch_001.json").write_text(json.dumps(second))
+    (dumps / "dump_000.json").write_text(json.dumps(second))
+
+    rows = list(dump_tree.rows({0: first, 1: second}))
+    assert [(r["epoch"], r["command"], r["depth"], r["first_epoch"]) for r in rows] == [
+        (0, "ls", 1, 0), (0, "<run tests>", 2, 0),
+        (1, "ls", 1, 0), (1, "<run tests>", 2, 0), (1, "pwd", 2, 1), (1, "cd /a", 1, 1),
+    ]
+    ls0, ls1, pwd, merged = rows[0], rows[2], rows[4], rows[5]
+    assert ls0["node"] == ls1["node"] and ls0["parent"] == ""  # the same node in both epochs
+    assert pwd["parent"] == ls1["node"] and pwd["node"] != ls1["node"]
+    assert (ls0["hits"], ls1["hits"], ls1["snapshot"], merged["merged_calls"]) == (1, 3, "snap-1", 2)
+    assert (ls0["runtime_ms"], ls0["output_bytes"]) == (4, 3)
+
+    out = tmp_path / "graphs.csv"
+    monkeypatch.setattr(sys, "argv", ["dump_tree.py", str(tmp_path), "--csv", str(out)])
+    dump_tree.main()
+    lines = out.read_text().splitlines()
+    assert lines[0].split(",") == dump_tree.COLUMNS and len(lines) == 7
+
+    capsys.readouterr()
+    monkeypatch.setattr(sys, "argv", ["dump_tree.py", str(tmp_path), "t", "--epoch", "1"])
+    dump_tree.main()
+    shown = [line.strip() for line in capsys.readouterr().out.splitlines() if not line.strip().startswith("[hits")]
+    assert shown == ["== t::run (epoch_001.json) ==", "$ ls", "$ <run tests>", "+ pwd", "+ cd /a", "= cd /b"]
+
+    monkeypatch.setattr(sys, "argv", ["dump_tree.py", str(tmp_path), "t", "--epoch", "5"])
+    with pytest.raises(SystemExit, match="this run has epochs 0, 1"):
+        dump_tree.main()

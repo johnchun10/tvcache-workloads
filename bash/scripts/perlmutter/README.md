@@ -178,6 +178,14 @@ plan's ratio table.
 
 Merged commands are marked `=`.
 
+**The trees as each epoch ended:** a run saves every task's tree at the end of
+each epoch (`dumps/epoch_000.json` is the first epoch).
+
+    $VERL_PY dump_tree.py $TVROOT/runs/<a> hello-world --epoch 2   # commands first run in epoch 2 are marked +
+    $VERL_PY dump_tree.py $TVROOT/runs/<a> --csv graphs.csv        # every node of every epoch, one row each
+
+The CSV's columns are listed at the top of `dump_tree.py`.
+
 **Cost:** a two-node shakedown is about 0.8 node-hours. The first
 `main20-easy-med` runs (Qwen2.5-1.5B, one cache mode each) trained for 2 h 20 to
 2 h 40, almost all of it waiting on hung commands (ISSUES.md #31), and tvverify
