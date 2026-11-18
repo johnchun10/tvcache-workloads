@@ -69,7 +69,7 @@ Rarely changed settings come from the environment: `MODEL`, `N_GPUS` (4; the
 model does not fit on fewer 40 GB GPUs), `THINKING` (0), `TEMPERATURE` (1.0),
 `MAX_TURNS` (30), `COMMAND_TIMEOUT` (30 s; a command still running then is
 treated as hung and ends its rollout as failed), `SEED` (42), `FORK_BANK` (1; 0 turns prewarming off), `CHECK_NODES`
-(20), `DUMP_INTERVAL` (600 s), and `RUN` (reuse a run directory to resume from
+(8; nodes tvverify replays per task), `DUMP_INTERVAL` (600 s), and `RUN` (reuse a run directory to resume from
 its checkpoint). See `env.sh` and the top of `train_pilot.sh`. The Slurm
 account and QOS are the `#SBATCH -A/-q` lines in `hetjob.sbatch`, one pair
 per node.
@@ -146,6 +146,10 @@ It is written when training ends, and again after tvverify. To rebuild it:
 **Correctness (tvverify)**
 - tvverify replays cached nodes from a fresh container and compares them with
   what the cache holds.
+- The job checks the final dump only (`CHECK_NODES` nodes per task, about
+  3 minutes a task). Dumps are cumulative, so it holds what the earlier ones
+  held. To check another dump afterwards, on a login node:
+  `bash check_login.sh <run> <run>/dumps/dump_007.json`.
 - **bug:** the cache disagrees with the replay.
 - **noise:** two fresh replays already disagree with each other, for example
   timestamps or random keys.
@@ -174,5 +178,9 @@ plan's ratio table.
 
 Merged commands are marked `=`.
 
-**Cost:** a two-node shakedown is about 0.8 node-hours. A `main20-easy-med`
-run hasn't been timed yet. Check usage with `sshare -A <project>` or Iris.
+**Cost:** a two-node shakedown is about 0.8 node-hours. The first
+`main20-easy-med` runs (Qwen2.5-1.5B, one cache mode each) trained for 2 h 20 to
+2 h 40, almost all of it waiting on hung commands (ISSUES.md #31), and tvverify
+then took 52 to 61 minutes on the final dump. A run with Qwen3.5-4B and the
+30 s command timeout hasn't been timed yet. Check usage with
+`sshare -A <project>` or Iris.

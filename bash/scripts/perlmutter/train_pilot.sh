@@ -56,7 +56,7 @@ MAX_TOKENS="${MAX_TOKENS:-4096}"       # tokens per rollout after the prompt (mo
 MAX_TURNS="${MAX_TURNS:-30}"           # tool calls per rollout
 COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-30}" # seconds before a command counts as hung (the slowest real one so far: 10 s)
 VERIFY="${VERIFY:-1}"                  # 1 = tvverify check-graph on the dumps afterwards
-CHECK_NODES="${CHECK_NODES:-20}"       # tvverify nodes replayed per task
+CHECK_NODES="${CHECK_NODES:-8}"        # tvverify nodes replayed per task (final dump)
 THRESHOLD="${THRESHOLD:-0.9}"          # contraction: similarity threshold
 EMBEDDER="${EMBEDDER:-minilm}"         # contraction: minilm | embeddinggemma2 | a sentence-transformers model name
 BUDGET="${BUDGET:-32}"                 # contraction: live sandboxes all jobs share
@@ -399,34 +399,26 @@ finish() {
   fi
 
   # 6. final dump (the sidecar dumps once more on SIGTERM, and stops the fork
-  #    bank's unused sandboxes), then tvverify while the manager still holds
-  #    the snapshots: C2a on the final trie, and --no-snapshots on earlier
-  #    dumps, whose snapshots may have been evicted
+  #    bank's unused sandboxes), then tvverify on that dump while the manager
+  #    still holds its snapshots (C1 and C2a)
   kill -TERM "$SIDECAR"; wait "$SIDECAR" || true
   DUMPS=("$RUN"/dumps/dump_*.json)
   FINAL="${DUMPS[${#DUMPS[@]}-1]}"
-  write_report   # before tvverify, which can take hours
+  write_report   # before tvverify, which takes about an hour on 20 tasks
   if [[ "$VERIFY" == 1 ]]; then
-    # The final dump goes first: it is the only check that needs the snapshots,
-    # which vanish with the node, and each replay takes ~9 s, so the 49-task
-    # dump at CHECK_NODES=20 alone takes hours. Earlier dumps follow, newest
-    # first, with whatever time the allocation has left (they can be rerun on
-    # a login node afterwards). check/report.md and the run's report.md are
-    # rewritten after each one: the job usually ends before the last dump, and
-    # the report must not keep saying tvverify did not run.
+    # Only the final dump is checked. Dumps are cumulative, so it holds what
+    # the earlier ones held (but for nodes contraction merged away since), and
+    # each of them costs as long again: about 3 minutes per task at 8 nodes,
+    # so checking all 16 dumps of a main20 run would take 15 to 18 hours and
+    # the job ended before step 7 could release the snapshots (ISSUES.md #32).
+    # An earlier dump can still be checked afterwards with check_login.sh.
     mkdir -p "$RUN/check"
-    FINAL_CHECK_NODES="${FINAL_CHECK_NODES:-8}"
-    for (( i=${#DUMPS[@]}-1; i>=0; i-- )); do
-      dump="${DUMPS[$i]}"
-      name="$(basename "$dump" .json)"
-      flags=(--max-replay-nodes "$FINAL_CHECK_NODES")
-      [[ "$dump" != "$FINAL" ]] && flags=(--max-replay-nodes "$CHECK_NODES" --no-snapshots)
-      (cd "$WORKLOADS" && "$VERL_PY" -m tvverify check-graph --adapter tvcache_workloads.bash.verify:TerminalBenchAdapter \
-         --dump "$dump" "${flags[@]}" --json "$RUN/check/$name.json") \
-         > "$RUN/check/$name.log" 2>&1 || true
-      "$VERL_PY" -m tvverify report "$RUN"/check/*.json > "$RUN/check/report.md" 2>/dev/null || true
-      write_report
-    done
+    name="$(basename "$FINAL" .json)"
+    (cd "$WORKLOADS" && "$VERL_PY" -m tvverify check-graph --adapter tvcache_workloads.bash.verify:TerminalBenchAdapter \
+       --dump "$FINAL" --max-replay-nodes "$CHECK_NODES" --json "$RUN/check/$name.json") \
+       > "$RUN/check/$name.log" 2>&1 || true
+    "$VERL_PY" -m tvverify report "$RUN"/check/*.json > "$RUN/check/report.md" 2>/dev/null || true
+    write_report   # with tvverify's findings, should the job end during step 7
   else
     echo "tvverify: skipped (VERIFY=0)" | tee -a "$RUN/logs/run.txt"
   fi
