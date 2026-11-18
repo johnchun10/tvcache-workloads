@@ -14,11 +14,11 @@
 #
 # Real runs are queued with submit_hetjob.sh (two nodes, ROLE=server and
 # ROLE=client below). On one node, run it inside a GPU allocation, e.g.
-#   sbatch -q shared -C gpu -G 2 -c 64 -t 02:00:00 -A <project> --wrap "bash run.sh shakedown"
+#   sbatch -q regular -C gpu -N 1 -G 4 -c 128 --mem=0 -t 02:00:00 -A <project> --wrap "bash run.sh shakedown"
 # Mind the memory there: podman's image store on GPU nodes is /tmp, a RAM
 # disk, and the 49-task pilot ran out of memory on a quarter and on a half
-# node (ISSUES.md #16, #17). veRL still uses one GPU (N_GPUS). Results land
-# in $RUN.
+# node (ISSUES.md #16, #17). veRL trains on all four GPUs (N_GPUS). Results
+# land in $RUN.
 #
 # ROLE picks what runs on this node:
 #   all     everything on one GPU node (cache server, manager, containers,
@@ -43,13 +43,20 @@ EPOCHS="${EPOCHS:-5}"
 TOTAL_STEPS="${TOTAL_STEPS:-}"         # stop early after this many steps (empty = all epochs)
 RESUME_FROM="${RESUME_FROM:-}"         # a previous part's checkpoints/ dir, copied into $RUN before veRL starts
 SEED="${SEED:-42}"                     # the dataloader's shuffle
-N_GPUS="${N_GPUS:-1}"
+# All four GPUs of a node. Qwen3.5-4B has about 5 billion parameters with its
+# vision encoder; veRL trains in fp32, so weights, gradients and AdamW's two
+# moments are about 80 GB, which one 40 GB A100 cannot hold. FSDP splits them
+# over the four.
+N_GPUS="${N_GPUS:-4}"
+THINKING="${THINKING:-0}"              # 1 = let Qwen3.5 think before each call (then raise MAX_TOKENS to 16384 or more)
+TEMPERATURE="${TEMPERATURE:-1.0}"      # rollout sampling temperature, with no top-p or top-k cut (see run_verl)
 ROLLOUTS="${ROLLOUTS:-4}"              # GRPO group size (the paper: 8)
 BATCH="${BATCH:-4}"                    # tasks per step (the paper's 4)
-MAX_TOKENS="${MAX_TOKENS:-2048}"       # tokens per rollout after the prompt (model output plus tool output)
+MAX_TOKENS="${MAX_TOKENS:-4096}"       # tokens per rollout after the prompt (model output plus tool output)
 MAX_TURNS="${MAX_TURNS:-30}"           # tool calls per rollout
+COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-30}" # seconds before a command counts as hung (the slowest real one so far: 10 s)
 VERIFY="${VERIFY:-1}"                  # 1 = tvverify check-graph on the dumps afterwards
-CHECK_NODES="${CHECK_NODES:-20}"       # tvverify nodes replayed per task
+CHECK_NODES="${CHECK_NODES:-8}"        # tvverify nodes replayed per task (final dump)
 THRESHOLD="${THRESHOLD:-0.9}"          # contraction: similarity threshold
 EMBEDDER="${EMBEDDER:-minilm}"         # contraction: minilm | embeddinggemma2 | a sentence-transformers model name
 BUDGET="${BUDGET:-32}"                 # contraction: live sandboxes all jobs share
@@ -64,6 +71,7 @@ case "$ROLE" in all|server|client) ;; *) echo "ROLE must be all, server or clien
 [[ "$MODE" != prebuild || "$ROLE" == all ]] || { echo "MODE=prebuild runs with ROLE=all" >&2; exit 2; }
 mkdir -p "$RUN/logs"
 export TVCACHE_NAMESPACE="$(basename "$RUN")"   # a fresh trie per run
+export TVCACHE_COMMAND_TIMEOUT="$COMMAND_TIMEOUT"
 # Fixed snapshot threshold (seconds of un-snapshotted runtime), so misses go
 # through the restore path often. Empty = tvclient's adaptive policy, which
 # took 4 snapshots in 686 commands in the sampling test.
@@ -142,11 +150,12 @@ fi
   [[ "$CACHE" == contraction ]] && echo "contraction: threshold $THRESHOLD, embedder $EMBEDDER, budget $BUDGET sandboxes"
   [[ "$FORK_BANK" == 1 ]] && echo "fork bank: $ROLLOUTS warm roots per task of the next batch, top $TOP_K hot snapshots"
   echo "epochs $EPOCHS, rollouts/task $ROLLOUTS, tasks/batch $BATCH, max tokens/rollout $MAX_TOKENS, max turns $MAX_TURNS, tvverify $VERIFY, seed $SEED"
+  echo "model $(basename "$MODEL"), thinking $THINKING, temperature $TEMPERATURE, GPUs $N_GPUS"
   echo "tasks ($(echo $TASK_NAMES | wc -w | tr -d ' ')): $TASK_NAMES"
 } | tee -a "$RUN/logs/run.txt"
 if [[ "$ROLE" != client ]]; then
   for name in PRESET MODE CACHE TVCACHE_VARIANT THRESHOLD EMBEDDER BUDGET FORK_BANK TOP_K EPOCHS ROLLOUTS BATCH MAX_TOKENS \
-              MAX_TURNS VERIFY CHECK_NODES N_GPUS MODEL SEED TASKS_ROOT TASK_NAMES TVCACHE_SNAPSHOT_THRESHOLD; do
+              MAX_TURNS COMMAND_TIMEOUT VERIFY CHECK_NODES N_GPUS MODEL THINKING TEMPERATURE SEED TASKS_ROOT TASK_NAMES TVCACHE_SNAPSHOT_THRESHOLD; do
     printf '%s=%q\n' "$name" "${!name-}"
   done > "$RUN/config.env"
 fi
@@ -320,7 +329,16 @@ run_verl() {
     actor_rollout_ref.rollout.n="$ROLLOUTS" actor_rollout_ref.rollout.tensor_model_parallel_size=1
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2
-    actor_rollout_ref.rollout.multi_turn.enable=True actor_rollout_ref.rollout.multi_turn.format=hermes
+    # Qwen3.5 writes tool calls as <tool_call><function=bash><parameter=command>...,
+    # not as Hermes JSON; veRL's parser for that format is qwen3_coder.
+    actor_rollout_ref.rollout.multi_turn.enable=True actor_rollout_ref.rollout.multi_turn.format=qwen3_coder
+    # Thinking is on unless the chat template is told otherwise.
+    +data.apply_chat_template_kwargs.enable_thinking="$([[ "$THINKING" == 1 ]] && echo True || echo False)"
+    # Sample from the policy itself: GRPO's probability ratios are computed
+    # against the untruncated distribution at temperature 1, so the model
+    # card's serving settings (temperature 0.7, top-p 0.8, top-k 20) would bias
+    # them. These are veRL's defaults, written out so a run records them.
+    actor_rollout_ref.rollout.temperature="$TEMPERATURE" actor_rollout_ref.rollout.top_p=1.0 actor_rollout_ref.rollout.top_k=-1
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns="$MAX_TURNS" actor_rollout_ref.rollout.multi_turn.max_tool_response_length=2048
     actor_rollout_ref.rollout.multi_turn.tool_config_path="$VERL_PKG/configs/tools.yaml"
     actor_rollout_ref.rollout.agent.agent_loop_config_path="$VERL_PKG/configs/agent_loops.yaml"
@@ -336,7 +354,7 @@ run_verl() {
   if [[ "$MODE" == sample ]]; then
     EXTRA=(trainer.val_only=True trainer.val_before_train=True
            actor_rollout_ref.rollout.val_kwargs.n="$ROLLOUTS" actor_rollout_ref.rollout.val_kwargs.do_sample=True
-           actor_rollout_ref.rollout.val_kwargs.temperature=1.0)
+           actor_rollout_ref.rollout.val_kwargs.temperature="$TEMPERATURE")
   else
     EXTRA=(trainer.total_epochs="$EPOCHS" trainer.val_before_train=False trainer.test_freq=-1)
     # Stop after this many steps in total (veRL checkpoints on the last step), to
@@ -381,31 +399,26 @@ finish() {
   fi
 
   # 6. final dump (the sidecar dumps once more on SIGTERM, and stops the fork
-  #    bank's unused sandboxes), then tvverify while the manager still holds
-  #    the snapshots: C2a on the final trie, and --no-snapshots on earlier
-  #    dumps, whose snapshots may have been evicted
+  #    bank's unused sandboxes), then tvverify on that dump while the manager
+  #    still holds its snapshots (C1 and C2a)
   kill -TERM "$SIDECAR"; wait "$SIDECAR" || true
   DUMPS=("$RUN"/dumps/dump_*.json)
   FINAL="${DUMPS[${#DUMPS[@]}-1]}"
-  write_report   # before tvverify, which can take hours
+  write_report   # before tvverify, which takes about an hour on 20 tasks
   if [[ "$VERIFY" == 1 ]]; then
-    # The final dump goes first: it is the only check that needs the snapshots,
-    # which vanish with the node, and each replay takes ~9 s, so the 49-task
-    # dump at CHECK_NODES=20 alone takes hours. Earlier dumps follow, newest
-    # first, with whatever time the allocation has left (they can be rerun on
-    # a login node afterwards); check/report.md is rewritten after each one.
+    # Only the final dump is checked. Dumps are cumulative, so it holds what
+    # the earlier ones held (but for nodes contraction merged away since), and
+    # each of them costs as long again: about 3 minutes per task at 8 nodes,
+    # so checking all 16 dumps of a main20 run would take 15 to 18 hours and
+    # the job ended before step 7 could release the snapshots (ISSUES.md #32).
+    # An earlier dump can still be checked afterwards with check_login.sh.
     mkdir -p "$RUN/check"
-    FINAL_CHECK_NODES="${FINAL_CHECK_NODES:-8}"
-    for (( i=${#DUMPS[@]}-1; i>=0; i-- )); do
-      dump="${DUMPS[$i]}"
-      name="$(basename "$dump" .json)"
-      flags=(--max-replay-nodes "$FINAL_CHECK_NODES")
-      [[ "$dump" != "$FINAL" ]] && flags=(--max-replay-nodes "$CHECK_NODES" --no-snapshots)
-      (cd "$WORKLOADS" && "$VERL_PY" -m tvverify check-graph --adapter tvcache_workloads.bash.verify:TerminalBenchAdapter \
-         --dump "$dump" "${flags[@]}" --json "$RUN/check/$name.json") \
-         > "$RUN/check/$name.log" 2>&1 || true
-      "$VERL_PY" -m tvverify report "$RUN"/check/*.json > "$RUN/check/report.md" 2>/dev/null || true
-    done
+    name="$(basename "$FINAL" .json)"
+    (cd "$WORKLOADS" && "$VERL_PY" -m tvverify check-graph --adapter tvcache_workloads.bash.verify:TerminalBenchAdapter \
+       --dump "$FINAL" --max-replay-nodes "$CHECK_NODES" --json "$RUN/check/$name.json") \
+       > "$RUN/check/$name.log" 2>&1 || true
+    "$VERL_PY" -m tvverify report "$RUN"/check/*.json > "$RUN/check/report.md" 2>/dev/null || true
+    write_report   # with tvverify's findings, should the job end during step 7
   else
     echo "tvverify: skipped (VERIFY=0)" | tee -a "$RUN/logs/run.txt"
   fi

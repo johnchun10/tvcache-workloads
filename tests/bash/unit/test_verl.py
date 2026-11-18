@@ -332,3 +332,158 @@ def test_control_port_hands_the_executor_the_sidecars_fork_bank(monkeypatch):
     session_module.make_session("t", settings)
     session_module.make_session("u", settings)
     assert len(banks) == 2 and isinstance(banks[0], RemoteForkGenerator) and banks[0] is banks[1]  # one per process
+
+
+def test_a_timed_out_command_ends_the_trajectory_without_replaying_it():
+    # Seen in training: every later call and the tests replayed the hung
+    # command and waited out its timeout again.
+    from tvcache_workloads.bash.manager_client import CommandTimeout
+    from tvcache_workloads.bash.verl.session import AFTER_TIMEOUT, NOT_TESTED
+
+    class Executor:
+        def __init__(self):
+            self.calls, self.tests, self.closed = [], 0, False
+
+        async def lookup_or_execute(self, history):
+            self.calls.append([c.command for c in history])
+            if history[-1].command == "cat":
+                raise CommandTimeout("/execute", 504, '{"error":"Command timed out after 30.0 seconds"}')
+            return f"ran {history[-1].command}"
+
+        async def test(self, history):
+            self.tests += 1
+            return json.dumps({"passed": True})
+
+        async def close(self):
+            self.closed = True
+
+    session = RolloutSession("t", Executor())
+
+    async def go():
+        return [await session.run(c) for c in ("cd /app", "cat", "ls", "pwd")], await session.finish()
+
+    outputs, test = asyncio.run(go())
+    assert outputs[0] == "ran cd /app"
+    assert outputs[1].startswith("Failed to execute: CommandTimeout")
+    assert outputs[2] == outputs[3] == AFTER_TIMEOUT
+    assert session.executor.calls == [["cd /app"], ["cd /app", "cat"]]  # nothing ran after the timeout
+    assert (session.timed_out, session.failed_calls, len(session.history)) == (True, 3, 2)
+    assert test == NOT_TESTED and session.executor.tests == 0 and session.executor.closed
+    # the reward is what a failed test gives: the model called the tool, the task is not solved
+    score = reward.compute_score("terminal_bench", "", "", {"tb_tool_calls": len(session.history), "tb_test": test})
+    assert (score["score"], score["passed"]) == (0.0, 0.0)
+
+
+def test_the_command_timeout_comes_from_the_environment(monkeypatch):
+    assert CacheSettings().command_timeout_sec == 30.0
+    monkeypatch.setenv("TVCACHE_COMMAND_TIMEOUT", "45")
+    assert CacheSettings.from_config({}).command_timeout_sec == 45.0
+
+
+# --- trainer.py: the step hooks, driven the way veRL 0.9.1's trainer_base.py
+# drives them (step -> prepare_step -> _next_train_batch -> one
+# _fetch_one_gen_batch per prompt, then on_sample_end, then _save_checkpoint)
+
+
+class FakeLoader:
+    """One prompt per batch, like the dataloader veRL builds for this mode."""
+
+    def __init__(self, tasks):
+        self.tasks, self.fetched = tasks, 0
+
+    def __iter__(self):
+        for task in self.tasks:
+            self.fetched += 1
+            yield {"extra_info": [{"task_id": task}], "raw_prompt": [task]}
+
+    def state_dict(self):
+        return {"fetched": self.fetched}
+
+
+class FakeData(dict):
+    __getattr__ = dict.__getitem__
+
+
+@pytest.fixture
+def trainer_run(monkeypatch):
+    """Runs TvcacheSyncTrainer for some steps; returns what it sent and did."""
+
+    class PPOTrainerSync:
+        def _next_train_batch(self):
+            data = self.config.data
+            fetches = data.train_batch_size // (data.get("gen_batch_size", None) or data.train_batch_size)
+            return [task for _ in range(fetches) for task in self._fetch_one_gen_batch()["raw_prompt"]]
+
+        def prepare_step(self):
+            self.submitted.append(self._next_train_batch())
+            return {}
+
+        def on_sample_end(self):
+            pass
+
+        def _save_checkpoint(self):
+            self.saved.append(self.train_dataloader.state_dict())
+
+    modules = {name: types.ModuleType(name) for name in (
+        "verl", "verl.trainer", "verl.trainer.ppo", "verl.trainer.ppo.v1", "verl.trainer.ppo.v1.trainer_base",
+        "verl.trainer.ppo.v1.trainer_sync", "verl.utils", "verl.utils.tensordict_utils")}
+    modules["verl.trainer.ppo.v1.trainer_base"].register_trainer = lambda name: (lambda cls: cls)
+    modules["verl.trainer.ppo.v1.trainer_sync"].PPOTrainerSync = PPOTrainerSync
+    modules["verl.utils.tensordict_utils"].get_tensordict = lambda batch: batch
+    modules["verl.utils"].tensordict_utils = modules["verl.utils.tensordict_utils"]
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.delitem(sys.modules, "tvcache_workloads.bash.verl.trainer", raising=False)
+    from tvcache_workloads.bash.verl import trainer as trainer_module
+
+    def run(tasks, batch, epochs, refill_at=None):
+        calls = []
+        monkeypatch.setattr(trainer_module.control, "call", lambda op, **fields: calls.append((op, fields)) or {})
+        trainer = trainer_module.TvcacheSyncTrainer()
+        trainer.config = types.SimpleNamespace(data=FakeData(train_batch_size=batch, gen_batch_size=1))
+        trainer.train_dataloader, trainer.train_dataloader_it = FakeLoader(tasks), None
+        trainer.steps_per_epoch = len(tasks) // batch
+        trainer.total_training_steps = trainer.steps_per_epoch * epochs
+        trainer.submitted, trainer.saved, trainer.global_steps = [], [], 0
+        for step in range(1, trainer.total_training_steps + 1):
+            trainer.global_steps = step
+            trainer.prepare_step()
+            if step == refill_at:  # veRL replaces an evicted group mid-step
+                trainer.submitted[-1] += trainer._fetch_one_gen_batch()["raw_prompt"]
+            trainer.on_sample_end()
+            trainer._save_checkpoint()
+        return trainer, calls
+
+    return run
+
+
+def test_trainer_sends_one_begin_warm_and_end_per_step_with_all_its_tasks(trainer_run):
+    tasks = [f"t{i}" for i in range(8)]
+    trainer, calls = trainer_run(tasks, batch=4, epochs=2)  # 4 steps of 4 tasks
+    steps = [tasks[:4], tasks[4:], tasks[:4], tasks[4:]]
+    assert trainer.submitted == steps  # veRL gets the dataloader's order, nothing skipped or repeated
+    expected = [("warm", {"tasks": steps[0], "wait": True})]
+    for i, current in enumerate(steps):
+        step, epoch, last = i + 1, i // 2, i == 3
+        expected.append(("begin", {"step": step, "epoch": epoch, "tasks": current}))
+        if not last:  # the next step's tasks warm while this one rolls out, and this step's roots are kept
+            expected.append(("warm", {"tasks": steps[i + 1], "keep": current, "wait": False}))
+        expected.append(("end", {"step": step, "epoch": epoch, "tasks": current, "last": last}))
+    assert calls == expected
+
+
+def test_trainer_checkpoint_does_not_count_the_peeked_step(trainer_run):
+    trainer, _ = trainer_run([f"t{i}" for i in range(8)], batch=4, epochs=2)
+    # After step n the run has trained 4n prompts; the loader itself is one step ahead until the last.
+    assert trainer.saved == [{"fetched": 4}, {"fetched": 8}, {"fetched": 12}, {"fetched": 16}]
+    assert trainer.train_dataloader.state_dict() == {"fetched": 16}  # the override is gone
+
+
+def test_trainer_counts_a_prompt_added_mid_step_as_that_steps_task(trainer_run):
+    tasks = [f"t{i}" for i in range(8)]
+    trainer, calls = trainer_run(tasks, batch=2, epochs=1, refill_at=1)
+    assert trainer.submitted[0] == ["t0", "t1", "t2"]
+    ends = [fields["tasks"] for op, fields in calls if op == "end"]
+    assert ends[0] == ["t0", "t1", "t2"]
+    # No prompt is lost or repeated; later steps just start one prompt further on.
+    assert [task for step in trainer.submitted for task in step] == tasks + ["t0"]

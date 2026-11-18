@@ -11,7 +11,8 @@ The probe is one shell line run in the container. It prints
 manifest lines that say which file or variable differs. Components:
 
   fs   every file, directory and symlink under the watched roots (type, mode,
-       link target, content), minus the excluded paths
+       link target, content), minus the excluded paths; a git index counts
+       by what it stages, not by its bytes (see _contents)
   env  exported variables, except bookkeeping (_, SHLVL, PWD, TMUX*, HOSTNAME)
   cwd  the current directory
   pkg  installed software: the dpkg package list and the names in
@@ -169,9 +170,28 @@ def _tree(policy: WatchPolicy) -> str:
     return _find(policy, entries) + " 2>/dev/null | sort"
 
 
+GIT_INDEX = "*/.git/index"
+
+
 def _contents(policy: WatchPolicy) -> str:
-    """`<sha256>  <path>` of every regular file, sorted by path."""
-    return _find(policy, "-type f -print0") + " 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null"
+    """`<sha256>  <path>` of every regular file, sorted by path, then of every
+    git index.
+
+    A git index is hashed by what it stages (`git ls-files -s`: mode, blob,
+    stage and path of each entry), not by its bytes. The bytes also hold each
+    file's timestamps, device and inode as a cache, and those differ between
+    two containers that ran the same commands (seen in training: a snapshot
+    and a fresh replay of `git init; git add .` differed in /app/.git/index
+    alone). Where git cannot read the index, its bytes are hashed as before."""
+    sort = " 2>/dev/null | sort -z | "
+    files = _find(policy, f"-type f ! -path {quote(GIT_INDEX)} -print0") + sort + "xargs -0 -r sha256sum 2>/dev/null"
+    indexes = (
+        _find(policy, f"-type f -path {quote(GIT_INDEX)} -print0") + sort + "while IFS= read -r -d '' f; do "
+        'if s=$(git --git-dir="${f%/index}" ls-files -s --full-name 2>/dev/null); '
+        'then h=$(printf %s "$s" | sha256sum); else h=$(sha256sum < "$f"); fi; '
+        'printf "%s  %s\\n" "${h%% *}" "$f"; done'
+    )
+    return f"{{ {files}; {indexes}; }}"
 
 
 def _env_lines(policy: WatchPolicy) -> str:

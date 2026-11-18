@@ -23,7 +23,7 @@ export TVCACHE_VARIANT="${TVCACHE_VARIANT:-combined}"
 if [[ "$TVCACHE_VARIANT" == nocache ]]; then CACHE=none; TVCACHE_VARIANT=main; fi   # the old spelling
 if [[ "$CACHE" == none ]]; then export TVCACHE_USE_CACHE=0; else export TVCACHE_USE_CACHE=1; fi
 export TASKS_ROOT="${TASKS_ROOT:-$TVROOT/container-manager-public/tasks_easy_network_skip}"
-export MODEL="${MODEL:-$SCRATCH/hf/Qwen2.5-1.5B-Instruct}"
+export MODEL="${MODEL:-$SCRATCH/hf/Qwen3.5-4B}"                              # Qwen/Qwen3.5-4B, downloaded by setup.sh
 export VERL_PY="${VERL_PY:-$TVROOT/verl-env/bin/python}"                      # a python with verl, vllm and tvcache-workloads installed
 export EMBED_PY="${EMBED_PY:-$TVROOT/embed-env/bin/python}"                    # a python with sentence-transformers, for the embedding service (setup.sh makes it)
 

@@ -4,7 +4,7 @@
 #   $TVROOT/bin/{uv,docker-compose}  the manager runs on uv; podman-hpc has no compose
 #   $TVROOT/verl-env                 conda env with veRL 0.9.1 (about 15 min the first time)
 #   $TVROOT/embed-env                the embedding models (they need a newer transformers)
-# and builds the cache server and downloads the models. Everything goes under
+# and builds the cache server and downloads the models (Qwen3.5-4B, about 10 GB). Everything goes under
 # $TVROOT; your own uv, docker-compose, conda or Python installs are not used
 # or changed (env.sh puts $TVROOT/bin first on PATH).
 set -euo pipefail
@@ -56,8 +56,24 @@ done
   -e "$TVROOT/tvcache-workloads/correctness" pyyaml pandas pyarrow httpx docker
 "$VERL_PY" -c "import verl, vllm, tvclient, tvverify, tvcache_workloads.bash.verl.session; print('python side ok: verl', verl.__version__, 'vllm', vllm.__version__)"
 
-[[ -f "$MODEL/config.json" ]] || "$VERL_PY" -c "import sys; from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-1.5B-Instruct', local_dir=sys.argv[1])" "$MODEL"
+[[ -f "$MODEL/config.json" ]] || "$VERL_PY" -c "import sys; from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3.5-4B', local_dir=sys.argv[1])" "$MODEL"
 echo "model at $MODEL"
+# Load its config and chat template now, so a model this environment cannot
+# read fails here and not inside a GPU job. veRL 0.9.1's pins (transformers
+# 5.9.0, vLLM 0.24.0) know the qwen3_5 model type. Runs turn thinking off
+# through the chat template (train_pilot.sh), which closes the <think> block
+# in the prompt; the check prints whether this template does.
+"$VERL_PY" - "$MODEL" <<'PY' || echo "the model check FAILED (see above); a run would fail the same way when veRL starts"
+import sys
+from transformers import AutoConfig, AutoTokenizer
+config = AutoConfig.from_pretrained(sys.argv[1])
+tokenizer = AutoTokenizer.from_pretrained(sys.argv[1])
+prompt = tokenizer.apply_chat_template(
+    [{"role": "user", "content": "hi"}], tokenize=False, add_generation_prompt=True, enable_thinking=False
+)
+assert prompt.rstrip().endswith("</think>"), f"enable_thinking=False did not close the thinking block: {prompt[-80:]!r}"
+print(f"model ok: {config.model_type}, thinking off closes the <think> block")
+PY
 
 # The embedding models contraction can use get their own environment, since
 # EmbeddingGemma 2 needs transformers >= 5.19 and veRL needs < 5.11

@@ -35,6 +35,7 @@ and shell options are lost. "parked" additionally costs a running container
 per snapshot and a commit on every restore.
 """
 
+import base64
 import json
 import time
 from dataclasses import dataclass, field
@@ -65,6 +66,29 @@ SNAPSHOT_MODES = ("cold", "parked")
 # "hello-world::exp1" runs task hello-world under its own cache tree.
 NAMESPACE_SEPARATOR = "::"
 DEFAULT_MANAGER_URL = "http://127.0.0.1:9901"
+
+
+def shell_line(command: str) -> str:
+    """The one line typed into the terminal to run `command`.
+
+    The manager types `<line>; tmux wait -S done` and waits for that signal,
+    after joining a multi-line command with `&&`. Typed as it is, a command
+    can keep the signal from ever running, and the call then waits out its
+    whole timeout: a syntax error (the shell runs none of the line), an
+    unclosed quote or here-document, a trailing comment or backslash. So the
+    command travels as base64 and is run by `eval` in the terminal's own
+    shell, where the working directory and variables it sets persist as
+    before. Whatever the command is, the typed line is well formed: a syntax
+    error is printed like any other output and the signal still follows.
+    Standard input is /dev/null, so a command that reads it (`cat`, `read`, a
+    bare `python`) sees end of file instead of waiting for a keyboard. A
+    multi-line command now runs as written, line by line, here-documents
+    included, where the manager's `&&` joining used to break it.
+
+    A program that opens the terminal itself (a password prompt) can still
+    wait; the command timeout remains the backstop."""
+    payload = base64.b64encode(command.encode()).decode()
+    return f"eval \"$(printf %s '{payload}' | base64 -d)\" < /dev/null"
 
 
 class SnapshotContractError(Exception):
@@ -190,7 +214,7 @@ class TerminalBenchSandbox(Sandbox):
         # A CommandTimeout or transport error propagates: the shell may still
         # be running the command, so tvclient must discard this sandbox.
         await client.execute(live_id, markers.begin_command, timeout)
-        await client.execute(live_id, tool_call.command, timeout)
+        await client.execute(live_id, shell_line(tool_call.command), timeout)
         await client.execute(live_id, markers.end_command, timeout)
         pane_log = await client.get_pane_logs(live_id)
         self._emit("execute", started, env_id=live_id)

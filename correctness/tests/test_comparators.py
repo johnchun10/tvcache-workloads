@@ -48,6 +48,28 @@ def test_timestamps_and_durations():
     assert not same("exit code 2024", "exit code 2025").equal
 
 
+def test_ls_long_listing_dates():
+    # Seen in training (deterministic-tarball, vulnerable-secret): the cached
+    # `ls -l` was hours older than the replay, so only the times differed.
+    a = "total 16\ndrwxr-xr-x  2 root root    60 Nov 16 05:47 .\n-rwxr-xr-x  1 root root 14520 Nov 16 05:47 vulnerable"
+    b = "total 16\ndrwxr-xr-x  2 root root    60 Nov 16 08:31 .\n-rwxr-xr-x  1 root root 14520 Nov 16 08:31 vulnerable"
+    assert same(a, b).equal
+    assert "ls_long_date" in same(a, b).normalizers_needed
+    assert same("-rwxr-xr-x  1 root root   0 Nov 16 06:50 /app/build.sh", "-rwxr-xr-x  1 root root   0 Nov 16 08:29 /app/build.sh").equal
+    # an old file prints a year, long-iso prints a date, a device prints major, minor
+    assert same("-rw-r--r-- 1 root root 5 Nov 16  2025 f", "-rw-r--r-- 1 root root 5 Jan  3 10:02 f").equal
+    assert same("-rw-r--r-- 1 root root 5 2026-11-16 06:50 f", "-rw-r--r-- 1 root root 5 2026-11-17 01:02 f").equal
+    assert same("crw-rw-rw- 1 root root 1, 3 Nov 16 06:50 null", "crw-rw-rw- 1 root root 1, 3 Nov 16 09:50 null").equal
+    # the mode, the owner, the size and the name are not times
+    line = "-rwxr-xr-x 1 root root 14520 Nov 16 05:47 vulnerable"
+    assert not same(line, line.replace("-rwxr-xr-x", "-rw-r--r--")).equal
+    assert not same(line, line.replace("root root", "root app")).equal
+    assert not same(line, line.replace("14520", "14521")).equal
+    assert not same(line, line.replace("vulnerable", "other")).equal
+    # a date outside a listing line is left alone
+    assert not same("released Nov 16 05:47", "released Nov 17 05:47").equal
+
+
 def test_addresses_and_ids():
     assert same("at 0x7f3a9c001234", "at 0x7fffdeadbeef").equal
     assert not same("at 0x12", "at 0x34").equal  # short hex is data, not an address

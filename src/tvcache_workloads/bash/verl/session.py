@@ -32,6 +32,12 @@ from tvcache_workloads.bash.verl.direct import DirectExecutor
 
 SESSION_KEY = "tvcache_rollout"  # extra_fields key holding the session id
 FAILED_PREFIX = "Failed to execute"
+TIMEOUT_NAME = "CommandTimeout"  # manager_client.CommandTimeout, as it appears in a failure message
+AFTER_TIMEOUT = (
+    f"{FAILED_PREFIX}: an earlier command in this attempt timed out, so its terminal was discarded "
+    "and no further commands run"
+)
+NOT_TESTED = f"{FAILED_PREFIX}: tests not run: a command timed out, so there is no final state to test"
 
 
 @dataclass(frozen=True)
@@ -45,7 +51,9 @@ class CacheSettings:
     cache_port: int = 7878
     manager_url: str = "http://127.0.0.1:9901"
     namespace: str = ""  # cache task id = "<task><NAMESPACE_SEPARATOR><namespace>", so runs never share a trie
-    command_timeout_sec: float = 120.0
+    # Commands in the training runs took 0.5 s at the median and 10 s at most;
+    # one that is still running after this is treated as hung.
+    command_timeout_sec: float = 30.0
     snapshot_mode: str = "cold"
     trace_dir: str = ""  # TraceRecorder JSONL per worker process; needs tvclient's observer hooks
     max_output_chars: int = 4000
@@ -139,6 +147,12 @@ class RolloutSession:
     history: List[BashToolCall] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     failed_calls: int = 0
+    # A command hit the timeout. Every later call and the tests replay the
+    # trajectory's commands from the start, the hung one included, so each
+    # would wait out the timeout again (the first main20 runs: one such
+    # rollout set the length of 21 of 25 steps). The trajectory instead ends
+    # as failed: later commands are refused and the tests do not run.
+    timed_out: bool = False
     # With contraction on: the coordinator's gate, and the cache task id this
     # trajectory holds there from its first command until its tests are done.
     gate: Optional[ContractionGate] = None
@@ -164,6 +178,9 @@ class RolloutSession:
     async def run(self, command: str) -> str:
         """Runs one command after the trajectory's earlier ones, through the cache."""
         async with self.lock:
+            if self.timed_out:
+                self.failed_calls += 1
+                return AFTER_TIMEOUT
             self.history.append(BashToolCall(command))
             try:
                 await self._pause_contraction()
@@ -172,14 +189,19 @@ class RolloutSession:
                 value = f"{FAILED_PREFIX}: {type(error).__name__}: {error}"
             if value.startswith(FAILED_PREFIX):
                 self.failed_calls += 1
+                self.timed_out = TIMEOUT_NAME in value
             return value
 
     async def finish(self) -> str:
         """Runs the task's tests on the final state (through the cache, like any
         call) and closes the executor. Returns the test output: JSON
-        {"passed": bool}, or a "Failed to execute" message."""
+        {"passed": bool}, or a "Failed to execute" message (which the reward
+        counts as not passed; also returned, without running the tests, after
+        a command timed out)."""
         async with self.lock:
             try:
+                if self.timed_out:
+                    return NOT_TESTED
                 return await self.executor.test(list(self.history))
             except Exception as error:
                 return f"{FAILED_PREFIX}: {type(error).__name__}: {error}"

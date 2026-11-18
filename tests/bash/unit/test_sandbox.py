@@ -6,6 +6,7 @@ about real Docker behavior; see tests/bash/e2e for that.
 
 import asyncio
 import json
+import re
 
 import pytest
 from fake_manager import FakeManager
@@ -82,16 +83,22 @@ def test_execute_returns_only_the_commands_output(Sandbox, fake):
     assert run(scenario()) == "Hello, world!"
 
 
-def test_user_command_is_sent_unchanged_between_marker_commands(Sandbox, fake):
+def test_user_command_is_sent_as_one_safe_line_between_marker_commands(Sandbox, fake):
+    from tvcache_workloads.bash.sandbox import shell_line
+
+    command = "cd /app\necho 'it''s' > a.txt # note"
+
     async def scenario():
         sandbox = await started(Sandbox)
-        await sandbox.execute(BashToolCall("pwd"))
+        await sandbox.execute(BashToolCall(command))
 
     run(scenario())
     commands = [c["command"] for c in fake.calls("/execute")]
     assert len(commands) == 3
     assert commands[0].startswith("printf '__TVB%s_%s__\\n' BEGIN ")
-    assert commands[1] == "pwd"
+    assert commands[1] == shell_line(command)
+    # one line of plain characters: nothing in the command can reach the shell unquoted
+    assert re.fullmatch(r"""eval "\$\(printf %s '[A-Za-z0-9+/=]+' \| base64 -d\)" < /dev/null""", commands[1])
     assert commands[2].startswith("printf '__TVB%s_%s__\\n' END ")
     assert all(c["blocking"] is True and c["timeout"] == 5 for c in fake.calls("/execute"))
 
@@ -311,3 +318,84 @@ def test_events_report_lifecycle_costs(Sandbox, events):
     run(scenario())
     assert [e["op"] for e in events] == ["start", "snapshot", "restore", "execute", "stop"]
     assert all(e["seconds"] >= 0 for e in events)
+
+
+# ---- shell_line in a real shell: the manager's completion signal always runs ----
+
+DONE = "__SIGNAL_RAN__"
+
+
+def _run_typed(line: str, tmp_path, timeout: float = 20):
+    """Runs `<line>; echo DONE` as the manager types it (the echo stands for
+    `tmux wait -S done`), with a standard input that stays open and silent,
+    like the terminal's. A line that hangs is killed after `timeout`, so its
+    output has no DONE."""
+    import subprocess
+    import threading
+
+    process = subprocess.Popen(
+        ["bash", "-c", f"{line}; echo {DONE}"], cwd=tmp_path, text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    timer = threading.Timer(timeout, process.kill)  # stdin stays open and silent, as a terminal's does
+    timer.start()
+    try:
+        output = process.stdout.read()
+        process.wait()
+        return output
+    finally:
+        timer.cancel()
+        process.stdin.close()
+
+
+needs_shell = pytest.mark.skipif(
+    not all(__import__("shutil").which(tool) for tool in ("bash", "base64")), reason="needs bash and base64"
+)
+
+# Commands from the first main20 runs' hung rollouts, and one of each kind.
+HANGS_WHEN_TYPED_RAW = [
+    "awk 'NR>1 {printf \"%f\", ($1-$3)\" \"($1-$5)*100/$1}\")",  # syntax error: the shell runs none of the line
+    "echo ' ?universityName . } } > solution.sparql",  # unclosed quote
+    "cat >> repo.sh <<EOF",  # here-document that never ends
+    "ls # list the files",  # the signal becomes part of the comment
+    "echo one \\",  # the backslash escapes the separator before the signal
+    "cat",  # reads the terminal
+    "base64 -d",
+    "read answer",
+    "bash",  # a shell waiting for commands
+]
+
+
+@needs_shell
+@pytest.mark.parametrize("command", HANGS_WHEN_TYPED_RAW)
+def test_no_command_can_keep_the_completion_signal_from_running(command, tmp_path):
+    from tvcache_workloads.bash.sandbox import shell_line
+
+    output = _run_typed(shell_line(command), tmp_path)
+    assert output.splitlines()[-1:] == [DONE], output
+
+
+@needs_shell
+def test_a_raw_command_can_swallow_the_signal_which_is_what_hung(tmp_path):
+    # (a line of its own: the shell's syntax error message quotes the typed text)
+    assert DONE not in _run_typed("ls # list the files", tmp_path).splitlines()  # typed unchanged, as before
+    assert DONE not in _run_typed("echo ok |", tmp_path).splitlines()  # a syntax error: nothing on the line runs
+
+
+@needs_shell
+def test_wrapped_commands_keep_their_meaning_and_the_shells_state(tmp_path):
+    from tvcache_workloads.bash.sandbox import shell_line
+
+    (tmp_path / "sub").mkdir()
+    # the working directory and variables set by one command are there for the next
+    line = "; ".join(shell_line(c) for c in ("cd sub", "export GREETING='hi there'", 'echo "$GREETING" from "$(basename "$PWD")"'))
+    assert _run_typed(line, tmp_path).splitlines() == ["hi there from sub", DONE]
+    # a multi-line command runs as written: a here-document, then a second command
+    script = "cat > note.txt <<EOF\nline 'one'\n  line \"two\" $HOME is not $(echo expanded)?\nEOF\nwc -l < note.txt"
+    assert _run_typed(shell_line(script), tmp_path).split() == ["2", DONE]
+    assert (tmp_path / "note.txt").read_text().startswith("line 'one'\n  line \"two\" ")
+    # quotes, history characters, tabs and non-ASCII text arrive unchanged
+    odd = "printf '%s\\n' \"a!b\" 'c\td' \"$((6*7))\" 'naïve ✓' \\!"
+    assert _run_typed(shell_line(odd), tmp_path).splitlines() == ["a!b", "c\td", "42", "naïve ✓", "!", DONE]
+    # a syntax error is printed, like any other output
+    assert "syntax error" in _run_typed(shell_line("echo ok |"), tmp_path)

@@ -63,7 +63,10 @@ class OfflineValidator:
             if fresh.startswith(FAILED_PREFIX):
                 out.append(Finding(criterion, "replay_failed", f"fresh replay could not run the call: {fresh[:80]!r}", node_id, tuple(path)))
             elif not cmp.equal:
-                out.append(Finding(criterion, "output_mismatch", f"cache serves {node.value[:40]!r} but fresh replay gives {fresh[:40]!r}", node_id, tuple(path)))
+                # cmp.diff is where the two first differ after normalizing; the
+                # first 40 characters alone are often the same on both sides.
+                where = f" (differs {cmp.diff})" if cmp.diff else ""
+                out.append(Finding(criterion, "output_mismatch", f"cache serves {node.value[:40]!r} but fresh replay gives {fresh[:40]!r}{where}", node_id, tuple(path)))
         if not stateful and self.check_purity:
             before, after = await self.engine.purity(path[:-1], key)
             if before and after and not diff_digests(before, after).equal_strict:

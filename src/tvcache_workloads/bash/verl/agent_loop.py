@@ -57,6 +57,7 @@ class TvcacheToolAgentLoop(ToolAgentLoop):
             and len(getattr(output, "response_ids", None) or []) >= self.response_length,
             "calls": output.extra_fields.get(CALLS_KEY, 0),
             "failed_calls": output.extra_fields.get("tb_failed_calls", 0),
+            "timed_out": bool(session is not None and session.timed_out),
             "test": output.extra_fields.get(TEST_KEY),
         })
         return output

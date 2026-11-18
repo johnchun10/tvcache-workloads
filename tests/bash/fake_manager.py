@@ -16,6 +16,7 @@ state directly, honoring the probe's `-path` excludes and listing pages.
 container runtime's own files do.
 """
 
+import base64
 import fnmatch
 import hashlib
 import itertools
@@ -30,6 +31,8 @@ import httpx
 WIDTH = 160
 HISTORY_ROWS = 2000 + 40  # tmux default history-limit plus the visible screen
 SUFFIX = "; tmux wait -S done"
+# The line sandbox.shell_line() types: the command as base64, run by eval.
+WRAPPED = re.compile(r"""eval "\$\(printf %s '([A-Za-z0-9+/=]*)' \| base64 -d\)" < /dev/null""")
 
 
 @dataclass
@@ -102,6 +105,9 @@ class FakeManager:
         command = " && ".join(lines)
         typed = terminal.rows.pop() + command + SUFFIX
         terminal.rows.extend(typed[i : i + WIDTH] for i in range(0, len(typed), WIDTH))
+        wrapped = WRAPPED.fullmatch(command)
+        if wrapped:  # eval runs the decoded command; its lines run one after another
+            command = base64.b64decode(wrapped.group(1)).decode()
         output, timed_out = self._run(terminal, command, payload["timeout"])
         if output:
             pending = output.split("\n")
@@ -237,7 +243,7 @@ class FakeManager:
         if "tvv-h" in command:
             return self._probe(terminal, command), False
         out = []
-        for part in re.split(r"\s*(?:&&|;)\s*", command):
+        for part in re.split(r"\s*(?:&&|;|\n)\s*", command):
             if not part:
                 continue
             words = shlex.split(part)
