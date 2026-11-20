@@ -467,7 +467,8 @@ def to_markdown(metrics: dict) -> str:
         # its headings go two levels down, under this section
         out += [("##" + line if line.startswith("#") else line) for line in tvverify.read_text().splitlines()]
     else:
-        out.append("Not available: tvverify did not run, or has not finished.")
+        out.append("Not available: tvverify did not run, or has not finished. It is a job of its own "
+                   "after training (`bash verify.sh <run>`).")
     out.append("")
     return "\n".join(out)
 

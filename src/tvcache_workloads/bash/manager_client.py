@@ -18,6 +18,8 @@ Cold snapshots (main of our container-manager-public fork):
     POST /snapshot         {"id"}           -> 200 {"snapshot_id"}; 404 unknown terminal
     POST /restore          {"snapshot_id"}  -> 200 {"id"} (a new running terminal)
     POST /delete_snapshot  {"snapshot_id"}  -> 200 {"status": "deleted"}; 404 unknown
+    POST /save_snapshots   {"dir"}          -> 200 {"snapshots","images","bytes","unknown"}
+    POST /load_snapshots   {"dir"}          -> 200 {"snapshots","missing"}; 404 nothing saved there
 
 Not wrapped: /fork_async + /done_forking (unused by the sandbox), /solve
 (oracle solution; not part of a rollout), /hash (returns the constant "1111").
@@ -69,6 +71,9 @@ class ManagerTimeouts:
     stop: float = 300.0
     pane_logs: float = 60.0
     test: float = 900.0
+    # /save_snapshots and /load_snapshots: one archive of every snapshot's
+    # images, tens of gigabytes after a long run.
+    archive: float = 3600.0
     # Added to the per-command timeout for /execute's HTTP round trip.
     execute_slack: float = 30.0
 
@@ -117,6 +122,19 @@ class ManagerClient:
 
     async def delete_snapshot(self, snapshot_id: str) -> None:
         await self._post("/delete_snapshot", {"snapshot_id": snapshot_id}, self.timeouts.stop)
+
+    async def save_snapshots(self, directory: str) -> dict:
+        """Writes every snapshot the manager holds to `directory`, to be loaded
+        by another manager after this one's image store is gone."""
+        body = await self._post("/save_snapshots", {"dir": str(directory)}, self.timeouts.archive)
+        self._field(body, "/save_snapshots", "snapshots", int)
+        return body
+
+    async def load_snapshots(self, directory: str) -> dict:
+        """Loads what save_snapshots wrote, so restore works for them here."""
+        body = await self._post("/load_snapshots", {"dir": str(directory)}, self.timeouts.archive)
+        self._field(body, "/load_snapshots", "snapshots", int)
+        return body
 
     async def test(self, terminal_id: str) -> bool:
         body = await self._post("/test", {"id": terminal_id}, self.timeouts.test)

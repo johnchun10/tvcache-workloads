@@ -415,3 +415,62 @@ def test_submit_hetjob_rejects_bad_flags_before_queueing(tmp_path):
     assert "--split needs --total" in submit("--split", "3").stderr
     assert "unknown option: --bogus" in submit("--bogus").stderr  # passed to run.sh, which rejects it
     assert not (tmp_path / "tvcache").exists()  # nothing was submitted
+
+
+def test_submit_hetjob_queues_tvverify_after_each_cached_run(tmp_path):
+    """Training and tvverify are separate jobs: every run that has a cache gets
+    a one-node tvverify job that starts when its training job ends."""
+    tools = tmp_path / "tvcache" / "bin"
+    tools.mkdir(parents=True)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    for path in (tools / "uv", tools / "docker-compose"):
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+    # A stand-in sbatch: records what it was asked and prints the next job id.
+    (fake / "sbatch").write_text(
+        "#!/bin/sh\n"
+        'n=$(( $(cat "$SCRATCH/n" 2>/dev/null || echo 100) + 1 )); echo $n > "$SCRATCH/n"\n'
+        'echo "$n RUN=$RUN CACHES=${CACHES:-} $*" >> "$SCRATCH/sbatch.log"\n'
+        'echo "$n;cluster"\n'
+    )
+    (fake / "sbatch").chmod(0o755)
+
+    def submit(*args, **extra):
+        (tmp_path / "sbatch.log").unlink(missing_ok=True)
+        env = {**os.environ, "SCRATCH": str(tmp_path), "PATH": f"{fake}:{os.environ['PATH']}", "BASE": str(tmp_path / "run"), **extra}
+        result = subprocess.run(["bash", str(SCRIPTS / "submit_hetjob.sh"), "shakedown", *args],
+                                capture_output=True, text=True, env=env)
+        assert result.returncode == 0, result.stderr
+        log = (tmp_path / "sbatch.log").read_text().splitlines()
+        return result.stdout, [line.split(" ", 3) for line in log]
+
+    # One cached run: the training job, then tvverify for the same run directory.
+    out, jobs = submit("--cache", "tvcache")
+    (train_id, train_run, _, train_args), (verify_id, verify_run, _, verify_args) = jobs
+    assert train_run == verify_run == f"RUN={tmp_path / 'run'}"
+    assert train_args.endswith("hetjob.sbatch") and "--dependency" not in train_args
+    assert f"--dependency=afterany:{train_id}" in verify_args and verify_args.endswith("verify.sbatch")
+    assert f"job {verify_id}: tvverify for RUN={tmp_path / 'run'} (after {train_id})" in out
+
+    # No cache, or tvverify turned off: nothing to check, so no second job.
+    assert len(submit("--cache", "none")[1]) == 1
+    assert len(submit("--cache", "tvcache", "--no-verify")[1]) == 1
+
+    # All three modes in one training job: one tvverify job for each mode that has a cache.
+    _, jobs = submit("--cache", "all")
+    assert [job[1] for job in jobs] == [f"RUN={tmp_path / 'run'}", f"RUN={tmp_path / 'run'}-tvcache", f"RUN={tmp_path / 'run'}-contraction"]
+    assert jobs[0][2] == "CACHES=none"  # the rest of "none tvcache contraction" is in the args column
+    assert all(f"--dependency=afterany:{jobs[0][0]}" in job[3] for job in jobs[1:])
+
+    # A split run: each part's tvverify waits for its own part.
+    _, jobs = submit("--cache", "tvcache", "--split", "2", "--total", "4")
+    kinds = ["verify" if job[3].endswith("verify.sbatch") else "train" for job in jobs]
+    assert kinds == ["train", "verify", "train", "verify"]
+    assert f"--dependency=afterany:{jobs[0][0]}" in jobs[1][3] and f"--dependency=afterany:{jobs[2][0]}" in jobs[3][3]
+    assert jobs[1][1].endswith("-part1") and jobs[3][1].endswith("-part2")
+
+    # A longer limit for tvverify's job is written into a copy of its job file.
+    _, jobs = submit("--cache", "tvcache", VERIFY_TIME="03:30:00")
+    script = Path(jobs[1][3].split()[-1])
+    assert "-t 03:30:00" in script.read_text() and "-t 02:00:00" not in script.read_text()

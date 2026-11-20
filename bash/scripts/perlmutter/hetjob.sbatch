@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # One run as a non-interactive heterogeneous job: component 0 is a CPU node
 # (podman, containers and their snapshots, cache server, manager, sidecar with
-# the fork bank, contraction coordinator, tvverify), component 1 a GPU node
-# (veRL). Slurm starts both together. Submit it with submit_hetjob.sh, which
-# sets HERE, RUN, PRESET and the run.sh flags ($RUN/run_args).
+# the fork bank, contraction coordinator), component 1 a GPU node (veRL).
+# Slurm starts both together. Submit it with submit_hetjob.sh, which sets
+# HERE, RUN, PRESET and the run.sh flags ($RUN/run_args), and queues tvverify
+# as a job of its own for afterwards (verify.sbatch).
 #
 # CACHES (set by submit_hetjob.sh --cache all) runs each cache mode in turn, each in
 # its own $RUN-<cache> with a fresh cache server (an empty graph); empty = the
@@ -24,7 +25,6 @@ CACHES="${CACHES:-}"
 echo "$(date +%FT%T) job $SLURM_JOB_ID: cpu $SLURM_JOB_NODELIST_HET_GROUP_0, gpu $SLURM_JOB_NODELIST_HET_GROUP_1, preset $PRESET ${ARGS[*]+${ARGS[*]}}${CACHES:+, caches: $CACHES}"
 
 modes=(${CACHES:-""})
-last="${modes[${#modes[@]}-1]}"
 status=0
 for cache in "${modes[@]}"; do
   RUN="$RUN_BASE"; flags=(); suffix=""
@@ -52,12 +52,10 @@ for cache in "${modes[@]}"; do
   # first, so the server never waits forever.
   [[ -e "$RUN/client.done" ]] || echo "$client_status" > "$RUN/client.done"
   echo "$(date +%FT%T) ${cache:-preset}: client exited $client_status"
-  # After the last mode's training the GPU node only idles while the server
-  # runs tvverify; give it back (probe_hetjob.sbatch showed the CPU component
-  # keeps running).
-  if [[ "${RELEASE_GPU:-1}" == 1 && "$cache" == "$last" ]]; then
-    scancel "${SLURM_JOB_ID}+1" && echo "$(date +%FT%T) released the GPU component"
-  fi
+  # The server ends soon after the client: it writes the final dump, saves
+  # the snapshots for tvverify and stops. (It used to run tvverify here, with
+  # the GPU node cancelled meanwhile, which left an incomplete hetjob that
+  # Slurm killed at its next restart: ISSUES.md #33.)
   wait "$SERVER"; server_status=$?   # kept first: $(date) below would reset $?
   echo "$(date +%FT%T) ${cache:-preset}: server exited $server_status"
   (( client_status != 0 )) && status=$client_status
