@@ -333,7 +333,9 @@ run_verl() {
     actor_rollout_ref.rollout.name=vllm actor_rollout_ref.rollout.mode=async
     actor_rollout_ref.rollout.n="$ROLLOUTS" actor_rollout_ref.rollout.tensor_model_parallel_size=1
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2
+    # 1, like the actor's: each GPU gets BATCH x ROLLOUTS / N_GPUS samples and
+    # veRL refuses a share that is not a multiple of this (ISSUES.md #34).
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
     # Qwen3.5 writes tool calls as <tool_call><function=bash><parameter=command>...,
     # not as Hermes JSON; veRL's parser for that format is qwen3_coder.
     actor_rollout_ref.rollout.multi_turn.enable=True actor_rollout_ref.rollout.multi_turn.format=qwen3_coder
