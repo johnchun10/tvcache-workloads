@@ -5,9 +5,16 @@ command going through no cache, TVCache, or TVCache with graph contraction.
 Afterwards tvverify checks the cache the run built, and everything ends up in
 one file, `<run>/report.md`.
 
-A run is one Slurm job on two nodes: a **CPU node** for the containers,
-snapshots, cache server, container manager, fork bank and contraction, and a
-**GPU node** for veRL. Slurm starts both, so you only work on a login node.
+A run is two Slurm jobs, both queued by one command:
+
+1. **Training**, on two nodes: a **CPU node** for the containers, snapshots,
+   cache server, container manager, fork bank and contraction, and a **GPU
+   node** for veRL. It ends when training does, after saving the run's
+   snapshots to `<run>/snapshots`.
+2. **tvverify**, on one CPU node, starting when the training job ends. It
+   loads the saved snapshots and adds its findings to `report.md`.
+
+Slurm starts both, so you only work on a login node.
 
 First time? Do the one-time setup in `GUIDE.md`. It also has fixes for
 known errors.
@@ -60,7 +67,7 @@ queued job.
 | `--max-tokens N` | tokens per rollout after the prompt, model output plus tool output (4096) |
 | `--tasks "a b c"` | replace the preset's task list |
 | `--mode sample` | rollouts only, no training |
-| `--no-verify` | skip tvverify. This also turns off the trace, so `report.md` then has no hit rates |
+| `--no-verify` | no tvverify job and no saved snapshots. This also turns off the trace, so `report.md` then has no hit rates |
 | `--name LABEL` | added to the run directory's name |
 | `--prebuild`, `--dry-run` | build the task images and exit / print the settings and exit |
 
@@ -99,7 +106,7 @@ and counts against the job's memory. Half a node ran out of memory on the
 
 ## Reading `report.md`
 
-It is written when training ends, and again after tvverify. To rebuild it:
+It is written when training ends, and again by the tvverify job. To rebuild it:
 `$VERL_PY -m tvcache_workloads.bash.verl.stats <run>`.
 
 **Training**
@@ -146,10 +153,19 @@ It is written when training ends, and again after tvverify. To rebuild it:
 **Correctness (tvverify)**
 - tvverify replays cached nodes from a fresh container and compares them with
   what the cache holds.
-- The job checks the final dump only (`CHECK_NODES` nodes per task, about
+- It runs as its own job after training (`verify.sbatch`, which calls
+  `verify.sh`), so the training job and its GPU node end with training. The
+  training job saves the run's snapshots to `<run>/snapshots` first, because
+  their images live in its node's `/tmp`; the tvverify job loads them from
+  there.
+- It checks the final dump only (`CHECK_NODES` nodes per task, about
   3 minutes a task). Dumps are cumulative, so it holds what the earlier ones
-  held. To check another dump afterwards, on a login node:
-  `bash check_login.sh <run> <run>/dumps/dump_007.json`.
+  held.
+- To run it again, or on another dump, on a login node or in an allocation:
+  `bash verify.sh <run>` or `bash verify.sh <run> <run>/dumps/epoch_002.json`.
+  Only the final dump is checked against its snapshots. `<run>/snapshots` can
+  be deleted once you no longer want to re-check them; it is the largest thing
+  in a run folder.
 - **bug:** the cache disagrees with the replay.
 - **noise:** two fresh replays already disagree with each other, for example
   timestamps or random keys.
@@ -164,6 +180,8 @@ It is written when training ends, and again after tvverify. To rebuild it:
 | `logs/memory.csv` | memory, image store size and containers, once a minute |
 | `contraction/events.jsonl` | every contraction pause, merge and round |
 | `dumps/`, `check/` | cache dumps; tvverify's results |
+| `snapshots/` | the run's snapshots, saved for tvverify: `images.tar`, `snapshots.json`, `task_dirs/` |
+| `verify.out`, `logs/verify-*.log` | the tvverify job's output |
 
 **Several runs side by side:**
 
@@ -181,6 +199,7 @@ Merged commands are marked `=`.
 **Cost:** a two-node shakedown is about 0.8 node-hours. The first
 `main20-easy-med` runs (Qwen2.5-1.5B, one cache mode each) trained for 2 h 20 to
 2 h 40, almost all of it waiting on hung commands (ISSUES.md #31), and tvverify
-then took 52 to 61 minutes on the final dump. A run with Qwen3.5-4B and the
-30 s command timeout hasn't been timed yet. Check usage with
+then took 52 to 61 minutes on the final dump, which is now one CPU node in a
+job of its own. A run with Qwen3.5-4B and the 30 s command timeout hasn't been
+timed yet, nor has saving and loading the snapshots. Check usage with
 `sshare -A <project>` or Iris.

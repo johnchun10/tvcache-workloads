@@ -245,3 +245,59 @@ def test_hello_world_trace_through_tvcache(manager, run, cache_server, cache_tas
     assert containers_for({e for e in every_env if e and e.startswith("term_")}) == []
     assert images_for(released) == []
     assert set(_docker_lines("images", "--format", "{{.Repository}}")) - images_before == set()
+
+
+def test_saved_snapshot_restores_after_its_images_are_deleted(run, tmp_path):
+    """What a training job and its tvverify job do between them (verify.sh):
+    the manager saves its snapshots to a directory; the snapshot is deleted
+    (images, record and task dir, as when the training job's node is gone);
+    loading the directory makes it restorable again, state included."""
+    from tvcache_workloads.bash.manager_client import ManagerClient, ManagerError
+
+    url = urlparse(MANAGER_URL)
+    if not _reachable(url.hostname, url.port or 80):
+        pytest.fail(f"container-manager-public is not reachable at {MANAGER_URL}")
+    Sandbox = TerminalBenchSandbox.with_config(SandboxConfig(manager_url=MANAGER_URL, command_timeout_sec=60))
+    client = ManagerClient(MANAGER_URL)
+    task = "hello-world::e2e-saved-snapshot"
+    saved_dir = tmp_path / "snapshots"
+    sandboxes = []
+
+    async def scenario():
+        parent = Sandbox(task_name=task)
+        await parent.start()
+        sandboxes.append(parent)
+        await parent.execute(BashToolCall("mkdir -p /app/work && cd /app/work && export FOO=kept && echo saved > /app/a.txt"))
+        handle = await parent.fork()
+        assert is_cold_handle(handle.get_id()) and images_for([handle.get_id()])
+
+        saved = await client.save_snapshots(str(saved_dir))
+        assert saved["snapshots"] >= 1 and saved["images"] >= 1
+        assert (saved_dir / "images.tar").stat().st_size == saved["bytes"] > 0
+
+        await handle.stop()  # /delete_snapshot
+        await parent.stop()
+        sandboxes.clear()
+        assert not images_for([handle.get_id()])
+        with pytest.raises(ManagerError):
+            await Sandbox(task_name=task, env_id=handle.get_id()).start()
+
+        loaded = await client.load_snapshots(str(saved_dir))
+        assert loaded["snapshots"] == saved["snapshots"] and loaded["missing"] == []
+        sandboxes.append(Sandbox(task_name=task, env_id=handle.get_id()))  # the loaded snapshot, deleted at the end
+        child = Sandbox(task_name=task, env_id=handle.get_id())
+        await child.start()
+        sandboxes.append(child)
+        assert await child.execute(BashToolCall("cat /app/a.txt; echo $FOO; pwd")) == "saved\nkept\n/app/work"
+
+    async def cleanup():
+        for sandbox in reversed(sandboxes):
+            try:
+                await sandbox.stop()
+            except Exception:
+                pass
+
+    try:
+        run(scenario())
+    finally:
+        run(cleanup())

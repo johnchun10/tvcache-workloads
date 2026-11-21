@@ -4,7 +4,7 @@
 #   2. the GPU node resolves the CPU node's hostname and reaches a TCP server
 #      on it (the cache server and manager listen on 0.0.0.0 the same way)
 #   3. scancel <job>+1 releases the GPU component alone and the CPU component
-#      keeps running (needed for RELEASE_GPU=1 in hetjob.sbatch)
+#      keeps running (hetjob.sbatch no longer cancels it: ISSUES.md #33)
 #
 #   sbatch -o $SCRATCH/tvcache/runs/slurm/%x-%j.out probe_hetjob.sbatch
 # Read the log: it ends with "PASS cpu component survived" if 3 holds.

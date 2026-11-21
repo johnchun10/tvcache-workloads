@@ -41,6 +41,8 @@ def test_request_payloads_match_manager_schema():
             "/snapshot": httpx.Response(200, json={"snapshot_id": "snap_1"}),
             "/restore": httpx.Response(200, json={"id": "term_3"}),
             "/delete_snapshot": httpx.Response(200, json={"status": "deleted"}),
+            "/save_snapshots": httpx.Response(200, json={"snapshots": 2, "images": 3, "bytes": 10, "unknown": []}),
+            "/load_snapshots": httpx.Response(200, json={"snapshots": 2, "missing": []}),
         }[request.url.path]
 
     client, seen = client_with(handler)
@@ -55,6 +57,8 @@ def test_request_payloads_match_manager_schema():
         assert await client.snapshot("term_1") == "snap_1"
         assert await client.restore("snap_1") == "term_3"
         await client.delete_snapshot("snap_1")
+        assert (await client.save_snapshots("/run/snapshots"))["images"] == 3
+        assert await client.load_snapshots("/run/snapshots") == {"snapshots": 2, "missing": []}
 
     run(scenario())
     assert seen == [
@@ -67,6 +71,8 @@ def test_request_payloads_match_manager_schema():
         ("/snapshot", {"id": "term_1"}),
         ("/restore", {"snapshot_id": "snap_1"}),
         ("/delete_snapshot", {"snapshot_id": "snap_1"}),
+        ("/save_snapshots", {"dir": "/run/snapshots"}),
+        ("/load_snapshots", {"dir": "/run/snapshots"}),
     ]
 
 

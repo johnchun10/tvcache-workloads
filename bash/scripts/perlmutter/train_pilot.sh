@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # One Terminal-Bench run on one Perlmutter GPU node: GRPO with veRL, every bash
-# command through TVCache (or not, or with graph contraction), then tvverify on
-# the cache it built. Start it through run.sh, which sets these from a preset:
+# command through TVCache (or not, or with graph contraction). tvverify checks
+# the cache it built afterwards, in a job of its own (verify.sh); this script
+# saves the snapshots that check needs. Start it through run.sh, which sets
+# these from a preset:
 #
 #   bash run.sh shakedown
 #   bash run.sh main20-easy-med --cache tvcache
@@ -24,8 +26,9 @@
 #   all     everything on one GPU node (cache server, manager, containers,
 #           veRL), so snapshots never move between nodes
 #   server  CPU node: podman, cache server, manager, sidecar (dumps, fork bank),
-#           contraction coordinator, then tvverify and snapshot release once
-#           the client is done. Containers and snapshots stay here.
+#           contraction coordinator; once the client is done, the final dump
+#           and the snapshots saved for tvverify. Containers and snapshots
+#           stay here.
 #   client  GPU node: veRL and, with contraction, the embedding service. It
 #           waits for $RUN/server.ready (the server's hostname) and sends
 #           cache, manager and control traffic there.
@@ -55,8 +58,8 @@ BATCH="${BATCH:-4}"                    # tasks per step (the paper's 4)
 MAX_TOKENS="${MAX_TOKENS:-4096}"       # tokens per rollout after the prompt (model output plus tool output)
 MAX_TURNS="${MAX_TURNS:-30}"           # tool calls per rollout
 COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-30}" # seconds before a command counts as hung (the slowest real one so far: 10 s)
-VERIFY="${VERIFY:-1}"                  # 1 = tvverify check-graph on the dumps afterwards
-CHECK_NODES="${CHECK_NODES:-8}"        # tvverify nodes replayed per task (final dump)
+VERIFY="${VERIFY:-1}"                  # 1 = keep the trace and save the snapshots for tvverify (verify.sh, its own job)
+CHECK_NODES="${CHECK_NODES:-8}"        # tvverify nodes replayed per task (verify.sh reads it from config.env)
 THRESHOLD="${THRESHOLD:-0.9}"          # contraction: similarity threshold
 EMBEDDER="${EMBEDDER:-minilm}"         # contraction: minilm | embeddinggemma2 | a sentence-transformers model name
 BUDGET="${BUDGET:-32}"                 # contraction: live sandboxes all jobs share
@@ -111,6 +114,10 @@ else
 fi
 # Read by rollouts (they embed and gate on the client) and by the coordinator.
 if [[ "$CACHE" == contraction ]]; then
+  # What "the same state" covers: more than /app, plus the installed software
+  # (state.py). In config.env too: verify.sh compares snapshots the same way.
+  export TVCACHE_STATE_ROOTS="${TVCACHE_STATE_ROOTS:-/app /root /etc /tmp}"
+  export TVCACHE_STATE_PACKAGES="${TVCACHE_STATE_PACKAGES:-1}"
   export TVCACHE_EMBEDDER="$EMBEDDER"
   export TVCACHE_CONTRACTION_PORT="${TVCACHE_CONTRACTION_PORT:-$TVCACHE_CONTRACTION_PORT_DEFAULT}"
   export TVCACHE_EMBED_PORT="${TVCACHE_EMBED_PORT:-$TVCACHE_EMBED_PORT_DEFAULT}"
@@ -155,7 +162,8 @@ fi
 } | tee -a "$RUN/logs/run.txt"
 if [[ "$ROLE" != client ]]; then
   for name in PRESET MODE CACHE TVCACHE_VARIANT THRESHOLD EMBEDDER BUDGET FORK_BANK TOP_K EPOCHS ROLLOUTS BATCH MAX_TOKENS \
-              MAX_TURNS COMMAND_TIMEOUT VERIFY CHECK_NODES N_GPUS MODEL THINKING TEMPERATURE SEED TASKS_ROOT TASK_NAMES TVCACHE_SNAPSHOT_THRESHOLD; do
+              MAX_TURNS COMMAND_TIMEOUT VERIFY CHECK_NODES N_GPUS MODEL THINKING TEMPERATURE SEED TASKS_ROOT TASK_NAMES TVCACHE_SNAPSHOT_THRESHOLD \
+              TVCACHE_STATE_ROOTS TVCACHE_STATE_PACKAGES; do
     printf '%s=%q\n' "$name" "${!name-}"
   done > "$RUN/config.env"
 fi
@@ -236,11 +244,8 @@ start_services() {
   #    coordinator that contracts a task whenever none of its rollouts is running
   COORDINATOR=""
   if [[ "$CACHE" == contraction ]]; then
-    # What "the same state" covers: more than /app, plus the installed software
-    # (state.py). The check below records, per task, the paths that differ
-    # between identical sandboxes anyway, and the tasks that cannot be compared.
-    export TVCACHE_STATE_ROOTS="${TVCACHE_STATE_ROOTS:-/app /root /etc /tmp}"
-    export TVCACHE_STATE_PACKAGES="${TVCACHE_STATE_PACKAGES:-1}"
+    # The check below records, per task, the paths that differ between
+    # identical sandboxes anyway, and the tasks that cannot be compared.
     # shellcheck disable=SC2086
     "$VERL_PY" -m tvcache_workloads.bash.state_check --tasks $TASK_NAMES --out "$RUN/state.json" \
       --manager-url "$TVCACHE_MANAGER_URL" 2>&1 | tee "$RUN/logs/state_check.log" | tee -a "$RUN/logs/run.txt" || {
@@ -381,8 +386,8 @@ finish() {
   echo "peak memory: $(awk -F, 'NR>1 && $2!="NA" && $2+0>m {m=$2+0} END {print m+0}' "$RUN/logs/memory.csv") GB (job cgroup), most containers at once: $(awk -F, 'NR>1 && $4+0>m {m=$4+0} END {print m+0}' "$RUN/logs/memory.csv")" | tee -a "$RUN/logs/run.txt"
 
   if [[ "$TVCACHE_USE_CACHE" != 1 ]]; then
-    # no cache: nothing to verify and no snapshots to release
-    echo "no cache: skipped tvverify and snapshot release" | tee -a "$RUN/logs/run.txt"
+    # no cache: no snapshots to save for tvverify or to release
+    echo "no cache: no snapshots to save or release" | tee -a "$RUN/logs/run.txt"
     echo "containers left: $($CONTAINER_CLI ps -q 2>/dev/null | wc -l)" | tee -a "$RUN/logs/run.txt"
     write_report
     return 0
@@ -399,31 +404,36 @@ finish() {
   fi
 
   # 6. final dump (the sidecar dumps once more on SIGTERM, and stops the fork
-  #    bank's unused sandboxes), then tvverify on that dump while the manager
-  #    still holds its snapshots (C1 and C2a)
+  #    bank's unused sandboxes)
   kill -TERM "$SIDECAR"; wait "$SIDECAR" || true
   DUMPS=("$RUN"/dumps/dump_*.json)
   FINAL="${DUMPS[${#DUMPS[@]}-1]}"
-  write_report   # before tvverify, which takes about an hour on 20 tasks
+  write_report
+
+  # 7. tvverify runs afterwards in a job of its own (verify.sh), so this job
+  #    and its GPU node end with training (ISSUES.md #33). Its snapshot check
+  #    needs this run's snapshots, and their images live in this node's /tmp:
+  #    the manager writes them to $RUN/snapshots first.
   if [[ "$VERIFY" == 1 ]]; then
-    # Only the final dump is checked. Dumps are cumulative, so it holds what
-    # the earlier ones held (but for nodes contraction merged away since), and
-    # each of them costs as long again: about 3 minutes per task at 8 nodes,
-    # so checking all 16 dumps of a main20 run would take 15 to 18 hours and
-    # the job ended before step 7 could release the snapshots (ISSUES.md #32).
-    # An earlier dump can still be checked afterwards with check_login.sh.
-    mkdir -p "$RUN/check"
-    name="$(basename "$FINAL" .json)"
-    (cd "$WORKLOADS" && "$VERL_PY" -m tvverify check-graph --adapter tvcache_workloads.bash.verify:TerminalBenchAdapter \
-       --dump "$FINAL" --max-replay-nodes "$CHECK_NODES" --json "$RUN/check/$name.json") \
-       > "$RUN/check/$name.log" 2>&1 || true
-    "$VERL_PY" -m tvverify report "$RUN"/check/*.json > "$RUN/check/report.md" 2>/dev/null || true
-    write_report   # with tvverify's findings, should the job end during step 7
+    "$VERL_PY" - "$RUN/snapshots" <<'PY' 2>&1 | tee -a "$RUN/logs/run.txt" || true
+import asyncio, os, sys, time
+from tvcache_workloads.bash.manager_client import ManagerClient
+async def go():
+    started = time.time()
+    try:
+        saved = await ManagerClient(os.environ["TVCACHE_MANAGER_URL"]).save_snapshots(sys.argv[1])
+    except Exception as error:
+        print(f"snapshots not saved, so tvverify will check outputs only: {error}")
+        return
+    print(f"snapshots saved for tvverify: {saved['snapshots']} snapshots, {saved['images']} images, "
+          f"{saved['bytes'] / 2**30:.1f} GB in {time.time() - started:.0f} s")
+asyncio.run(go())
+PY
   else
-    echo "tvverify: skipped (VERIFY=0)" | tee -a "$RUN/logs/run.txt"
+    echo "tvverify: off (VERIFY=0), so no snapshots are saved" | tee -a "$RUN/logs/run.txt"
   fi
 
-  # 7. delete every snapshot this run's trie still holds (the sidecar is stopped,
+  # 8. delete every snapshot this run's trie still holds (the sidecar is stopped,
   #    so this is the only drainer now)
   "$VERL_PY" - "$FINAL" <<'PY'
 import asyncio, json, os, sys
@@ -440,9 +450,10 @@ PY
   leftover=$($CONTAINER_CLI images --filter label=com.docker.compose.project=tvcache-snapshot -q | wc -l)
   echo "snapshot images left: $leftover" | tee -a "$RUN/logs/run.txt"
   echo "containers left: $($CONTAINER_CLI ps -q 2>/dev/null | wc -l)" | tee -a "$RUN/logs/run.txt"
-  # 8. the run's report, now with tvverify's findings (report.md, metrics.json)
+  # 9. the run's report (report.md, metrics.json); verify.sh adds tvverify's findings
   write_report
   echo "report: $RUN/report.md" | tee -a "$RUN/logs/run.txt"
+  [[ "$VERIFY" != 1 ]] || echo "tvverify: not part of this job; bash $HERE/verify.sh $RUN (submit_hetjob.sh queues it)" | tee -a "$RUN/logs/run.txt"
 }
 
 VERL_STATUS=0
