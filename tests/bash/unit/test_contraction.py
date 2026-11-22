@@ -449,7 +449,7 @@ def test_submit_hetjob_queues_tvverify_after_each_cached_run(tmp_path):
     out, jobs = submit("--cache", "tvcache")
     (train_id, train_run, _, train_args), (verify_id, verify_run, _, verify_args) = jobs
     assert train_run == verify_run == f"RUN={tmp_path / 'run'}"
-    assert train_args.endswith("hetjob.sbatch") and "--dependency" not in train_args
+    assert train_args.endswith("hetjob-full.sbatch") and "--dependency" not in train_args
     assert f"--dependency=afterany:{train_id}" in verify_args and verify_args.endswith("verify.sbatch")
     assert f"job {verify_id}: tvverify for RUN={tmp_path / 'run'} (after {train_id})" in out
 
@@ -476,10 +476,10 @@ def test_submit_hetjob_queues_tvverify_after_each_cached_run(tmp_path):
     assert "-t 03:30:00" in script.read_text() and "-t 02:00:00" not in script.read_text()
 
 
-def test_submit_hetjob_asks_for_half_an_80gb_node_or_a_whole_node(tmp_path):
-    """The GPU component is two 80 GB GPUs in the shared QOS (charged as half
-    a node) unless GPU_NODE=full asks for a whole 40 GB node; veRL's GPU count
-    follows."""
+def test_submit_hetjob_asks_for_a_whole_node_or_half_an_80gb_node(tmp_path):
+    """The GPU component is a whole 40 GB node unless GPU_NODE=half asks for
+    two 80 GB GPUs in the shared QOS (charged as half a node); veRL's GPU
+    count follows."""
     tools = tmp_path / "tvcache" / "bin"
     tools.mkdir(parents=True)
     fake = tmp_path / "fakebin"
@@ -508,6 +508,10 @@ def test_submit_hetjob_asks_for_half_an_80gb_node_or_a_whole_node(tmp_path):
         return result, gpus, gpu_lines
 
     result, gpus, gpu_lines = submit()
+    assert gpus == "4" and "(GPUs: 4, full node)" in result.stdout
+    assert gpu_lines == ["#SBATCH -A m4999 -q regular -t 05:00:00", "#SBATCH -C gpu -N 1 -G 4"]
+
+    result, gpus, gpu_lines = submit(GPU_NODE="half")
     assert gpus == "2" and "(GPUs: 2, half node)" in result.stdout
     assert gpu_lines == ["#SBATCH -A m4999 -q shared -t 05:00:00", "#SBATCH -C gpu&hbm80g -n 1 -c 64 --gpus=2"]
 

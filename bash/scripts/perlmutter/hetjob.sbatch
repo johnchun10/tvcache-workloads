@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # One run as a non-interactive heterogeneous job: component 0 is a CPU node
 # (podman, containers and their snapshots, cache server, manager, sidecar with
-# the fork bank, contraction coordinator), component 1 the GPUs (veRL): half
-# of a node with 80 GB GPUs, in the shared QOS, which is charged as half a
-# node. GPU_NODE=full at submit_hetjob.sh asks for a whole 40 GB node instead
-# (it rewrites the two #SBATCH lines after "hetjob" below). The GPUs are asked
+# the fork bank, contraction coordinator), component 1 the GPUs (veRL). As written
+# here that is half of a node with 80 GB GPUs, in the shared QOS, which is
+# charged as half a node (GPU_NODE=half). submit_hetjob.sh's default,
+# GPU_NODE=full, asks for a whole 40 GB node instead (it rewrites the two
+# #SBATCH lines after "hetjob" below). The GPUs are asked
 # for with --gpus, not --gpus-per-task: the shared queue counted the latter as
 # one GPU and refused 64 cores for it.
 # Slurm starts both together. Submit it with submit_hetjob.sh, which sets
