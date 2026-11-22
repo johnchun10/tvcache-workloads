@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # One run as a non-interactive heterogeneous job: component 0 is a CPU node
 # (podman, containers and their snapshots, cache server, manager, sidecar with
-# the fork bank, contraction coordinator), component 1 a GPU node (veRL).
+# the fork bank, contraction coordinator), component 1 the GPUs (veRL): half
+# of a node with 80 GB GPUs, in the shared QOS, which is charged as half a
+# node. GPU_NODE=full at submit_hetjob.sh asks for a whole 40 GB node instead
+# (it rewrites the two #SBATCH lines after "hetjob" below).
 # Slurm starts both together. Submit it with submit_hetjob.sh, which sets
 # HERE, RUN, PRESET and the run.sh flags ($RUN/run_args), and queues tvverify
 # as a job of its own for afterwards (verify.sbatch).
@@ -13,8 +16,8 @@
 #SBATCH -A m4999 -q regular -t 05:00:00
 #SBATCH -C cpu -N 1
 #SBATCH hetjob
-#SBATCH -A m4999 -q regular -t 05:00:00
-#SBATCH -C gpu -N 1 -G 4
+#SBATCH -A m4999 -q shared -t 05:00:00
+#SBATCH -C gpu&hbm80g -n 1 -c 64 --gpus-per-task=2
 set -uo pipefail
 HERE="${HERE:?submit with submit_hetjob.sh (sets HERE)}"
 RUN_BASE="${RUN:?submit with submit_hetjob.sh (sets RUN)}"
@@ -26,6 +29,11 @@ echo "$(date +%FT%T) job $SLURM_JOB_ID: cpu $SLURM_JOB_NODELIST_HET_GROUP_0, gpu
 
 modes=(${CACHES:-""})
 status=0
+# The GPU component's step: every GPU it was given, with a quarter of the
+# node's 128 hardware threads per GPU (what the shared QOS allocates).
+GPUS="${N_GPUS:-2}"
+gpu_step=(-n 1 -c $(( 32 * GPUS )) --gpus="$GPUS" --cpu-bind=none)
+if (( GPUS == 4 )); then gpu_step=(-N 1 "${gpu_step[@]}" --mem=0); fi   # a whole node: all its memory too
 for cache in "${modes[@]}"; do
   RUN="$RUN_BASE"; flags=(); suffix=""
   if [[ -n "$cache" ]]; then flags=(--cache "$cache"); [[ ${#modes[@]} -gt 1 ]] && suffix="-$cache"; fi
@@ -35,16 +43,15 @@ for cache in "${modes[@]}"; do
   mkdir -p "$RUN"
   rm -f "$RUN/client.done"
   echo "$(date +%FT%T) ${cache:-preset}: RUN=$RUN"
-  # Whole node to each role: every CPU and all memory (the /tmp RAM disk with
-  # podman's images counts toward it). CPU nodes have 256 hardware threads,
-  # GPU nodes 128.
+  # The whole CPU node to the server: every CPU and all memory (the /tmp RAM
+  # disk with podman's images counts toward it; 256 hardware threads).
   # /usr/bin/env, not env: srun runs the first file of that name on PATH, and
   # the uv installer leaves a non-executable ~/.local/bin/env (ISSUES.md #27).
   srun --het-group=0 -N 1 -n 1 -c 256 --mem=0 --cpu-bind=none \
     /usr/bin/env ROLE=server RUN="$RUN" RESUME_FROM="$resume" \
     bash "$HERE/run.sh" "$PRESET" ${ARGS[@]+"${ARGS[@]}"} ${flags[@]+"${flags[@]}"} > "$RUN/server.out" 2>&1 &
   SERVER=$!
-  srun --het-group=1 -N 1 -n 1 -c 128 --gpus=4 --mem=0 --cpu-bind=none \
+  srun --het-group=1 "${gpu_step[@]}" \
     /usr/bin/env ROLE=client RUN="$RUN" RESUME_FROM="$resume" \
     bash "$HERE/run.sh" "$PRESET" ${ARGS[@]+"${ARGS[@]}"} ${flags[@]+"${flags[@]}"} > "$RUN/client.out" 2>&1
   client_status=$?

@@ -16,10 +16,11 @@
 #
 # Real runs are queued with submit_hetjob.sh (two nodes, ROLE=server and
 # ROLE=client below). On one node, run it inside a GPU allocation, e.g.
-#   sbatch -q regular -C gpu -N 1 -G 4 -c 128 --mem=0 -t 02:00:00 -A <project> --wrap "bash run.sh shakedown"
+#   sbatch -q regular -C gpu -N 1 -G 4 -c 128 --mem=0 -t 02:00:00 -A <project> --wrap "N_GPUS=4 bash run.sh shakedown"
 # Mind the memory there: podman's image store on GPU nodes is /tmp, a RAM
 # disk, and the 49-task pilot ran out of memory on a quarter and on a half
-# node (ISSUES.md #16, #17). veRL trains on all four GPUs (N_GPUS). Results
+# node (ISSUES.md #16, #17). veRL trains on N_GPUS GPUs: all four of a 40 GB
+# node there, two 80 GB ones in the two-node job. Results
 # land in $RUN.
 #
 # ROLE picks what runs on this node:
@@ -46,11 +47,12 @@ EPOCHS="${EPOCHS:-5}"
 TOTAL_STEPS="${TOTAL_STEPS:-}"         # stop early after this many steps (empty = all epochs)
 RESUME_FROM="${RESUME_FROM:-}"         # a previous part's checkpoints/ dir, copied into $RUN before veRL starts
 SEED="${SEED:-42}"                     # the dataloader's shuffle
-# All four GPUs of a node. Qwen3.5-4B has about 5 billion parameters with its
+# Two 80 GB GPUs (half a node; hetjob.sbatch), or all four of a 40 GB node
+# (N_GPUS=4; GPU_NODE=full at submit_hetjob.sh). Qwen3.5-4B has about 5 billion parameters with its
 # vision encoder; veRL trains in fp32, so weights, gradients and AdamW's two
 # moments are about 80 GB, which one 40 GB A100 cannot hold. FSDP splits them
 # over the four.
-N_GPUS="${N_GPUS:-4}"
+N_GPUS="${N_GPUS:-2}"
 THINKING="${THINKING:-0}"              # 1 = let Qwen3.5 think before each call (then raise MAX_TOKENS to 16384 or more)
 TEMPERATURE="${TEMPERATURE:-1.0}"      # rollout sampling temperature, with no top-p or top-k cut (see run_verl)
 ROLLOUTS="${ROLLOUTS:-4}"              # GRPO group size (the paper: 8)
@@ -333,7 +335,9 @@ run_verl() {
     actor_rollout_ref.rollout.name=vllm actor_rollout_ref.rollout.mode=async
     actor_rollout_ref.rollout.n="$ROLLOUTS" actor_rollout_ref.rollout.tensor_model_parallel_size=1
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2
+    # 1, like the actor's: each GPU gets BATCH x ROLLOUTS / N_GPUS samples and
+    # veRL refuses a share that is not a multiple of this (ISSUES.md #34).
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
     # Qwen3.5 writes tool calls as <tool_call><function=bash><parameter=command>...,
     # not as Hermes JSON; veRL's parser for that format is qwen3_coder.
     actor_rollout_ref.rollout.multi_turn.enable=True actor_rollout_ref.rollout.multi_turn.format=qwen3_coder

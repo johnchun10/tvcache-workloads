@@ -474,3 +474,49 @@ def test_submit_hetjob_queues_tvverify_after_each_cached_run(tmp_path):
     _, jobs = submit("--cache", "tvcache", VERIFY_TIME="03:30:00")
     script = Path(jobs[1][3].split()[-1])
     assert "-t 03:30:00" in script.read_text() and "-t 02:00:00" not in script.read_text()
+
+
+def test_submit_hetjob_asks_for_half_an_80gb_node_or_a_whole_node(tmp_path):
+    """The GPU component is two 80 GB GPUs in the shared QOS (charged as half
+    a node) unless GPU_NODE=full asks for a whole 40 GB node; veRL's GPU count
+    follows."""
+    tools = tmp_path / "tvcache" / "bin"
+    tools.mkdir(parents=True)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    for path in (tools / "uv", tools / "docker-compose"):
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+    (fake / "sbatch").write_text(
+        "#!/bin/sh\n"
+        'for last; do :; done\n'
+        'case "$last" in *hetjob*) echo "$N_GPUS $last" >> "$SCRATCH/sbatch.log";; esac\n'
+        'echo "101;cluster"\n'
+    )
+    (fake / "sbatch").chmod(0o755)
+
+    def submit(*args, **extra):
+        (tmp_path / "sbatch.log").unlink(missing_ok=True)
+        env = {k: v for k, v in os.environ.items() if k != "N_GPUS"}  # the script's own default, whatever this shell has
+        env.update(SCRATCH=str(tmp_path), PATH=f"{fake}:{os.environ['PATH']}", BASE=str(tmp_path / "run"), **extra)
+        result = subprocess.run(["bash", str(SCRIPTS / "submit_hetjob.sh"), "shakedown", "--cache", "tvcache", *args],
+                                capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            return result, None, None
+        gpus, script = (tmp_path / "sbatch.log").read_text().split()
+        gpu_lines = Path(script).read_text().split("#SBATCH hetjob\n")[1].splitlines()[:2]
+        return result, gpus, gpu_lines
+
+    result, gpus, gpu_lines = submit()
+    assert gpus == "2" and "(GPUs: 2, half node)" in result.stdout
+    assert gpu_lines == ["#SBATCH -A m4999 -q shared -t 05:00:00", "#SBATCH -C gpu&hbm80g -n 1 -c 64 --gpus-per-task=2"]
+
+    result, gpus, gpu_lines = submit("--time", "01:00:00", GPU_NODE="full")
+    assert gpus == "4" and "(GPUs: 4, full node)" in result.stdout
+    assert gpu_lines == ["#SBATCH -A m4999 -q regular -t 01:00:00", "#SBATCH -C gpu -N 1 -G 4"]
+
+    result, _, _ = submit(GPU_NODE="quarter")
+    assert result.returncode == 2 and "GPU_NODE must be half or full" in result.stderr
+    # The step's size follows the GPU count: a quarter of the node's threads per GPU.
+    job = (SCRIPTS / "hetjob.sbatch").read_text()
+    assert 'gpu_step=(-n 1 -c $(( 32 * GPUS )) --gpus="$GPUS" --cpu-bind=none)' in job and 'srun --het-group=1 "${gpu_step[@]}"' in job
