@@ -8,9 +8,9 @@ one file, `<run>/report.md`.
 A run is two Slurm jobs, both queued by one command:
 
 1. **Training**, on two nodes: a **CPU node** for the containers, snapshots,
-   cache server, container manager, fork bank and contraction, and a **GPU
-   node** for veRL. It ends when training does, after saving the run's
-   snapshots to `<run>/snapshots`.
+   cache server, container manager, fork bank and contraction, and **half of
+   a GPU node** (two 80 GB GPUs, charged as half a node) for veRL. It ends
+   when training does, after saving the run's snapshots to `<run>/snapshots`.
 2. **tvverify**, on one CPU node, starting when the training job ends. It
    loads the saved snapshots and adds its findings to `report.md`.
 
@@ -72,8 +72,9 @@ queued job.
 | `--prebuild`, `--dry-run` | build the task images and exit / print the settings and exit |
 
 The model is Qwen3.5-4B, with thinking off and sampled at temperature 1.0.
-Rarely changed settings come from the environment: `MODEL`, `N_GPUS` (4; the
-model does not fit on fewer 40 GB GPUs), `THINKING` (0), `TEMPERATURE` (1.0),
+Rarely changed settings come from the environment: `GPU_NODE` (`half`: two
+80 GB GPUs in the shared QOS; `full`: a whole node with four 40 GB GPUs. The
+model needs about 160 GB of GPU memory either way), `MODEL`, `THINKING` (0), `TEMPERATURE` (1.0),
 `MAX_TURNS` (30), `COMMAND_TIMEOUT` (30 s; a command still running then is
 treated as hung and ends its rollout as failed), `SEED` (42), `FORK_BANK` (1; 0 turns prewarming off), `CHECK_NODES`
 (8; nodes tvverify replays per task), `DUMP_INTERVAL` (600 s), and `RUN` (reuse a run directory to resume from
@@ -98,7 +99,7 @@ hand-written command pairs, so treat them as a rough guide:
 `run.sh` called inside a GPU allocation runs everything on that node:
 
     sbatch -q regular -C gpu -N 1 -G 4 -c 128 --mem=0 -t 05:00:00 -A <project> \
-      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "bash run.sh shakedown"
+      -o $SCRATCH/tvcache/runs/slurm/%x-%j.out --wrap "N_GPUS=4 bash run.sh shakedown"
 
 Use a whole node. On GPU nodes podman stores images in `/tmp`, which is RAM
 and counts against the job's memory. Half a node ran out of memory on the

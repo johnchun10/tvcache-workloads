@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Submits a run as a two-node job (hetjob.sbatch): a CPU node for the
 # containers, snapshots, cache server, manager, fork bank and contraction, and
-# a GPU node for veRL. Run it on a login node; no terminal needs to stay open.
+# half of a GPU node (two 80 GB GPUs) for veRL. Run it on a login node; no
+# terminal needs to stay open.
 # For each run that uses a cache it also queues tvverify, as a one-node CPU job
 # that starts when the training job ends (verify.sbatch; not with --no-verify).
 #
@@ -19,6 +20,11 @@
 #   --split N --total M train M steps in parts of N, one job per part, each
 #                       resuming from the previous part's checkpoint
 # Every other flag is a run.sh flag (--threshold, --epochs, --top-k, ...).
+#
+# From the environment:
+#   GPU_NODE=half|full  half (default): 2 GPUs of a node with 80 GB GPUs, in the
+#                       shared QOS, charged as half a node. full: a whole node
+#                       with four 40 GB GPUs, as before.
 #
 # The account and QOS are the #SBATCH -A/-q lines in hetjob.sbatch (one pair
 # per node; sbatch options on the command line would reach only the first).
@@ -41,6 +47,14 @@ done
 [[ "$SPLIT$TOTAL" =~ ^[0-9]*$ ]] || { echo "--split and --total take a number of steps" >&2; exit 2; }
 [[ -z "$SPLIT" || -n "$TOTAL" ]] || { echo "--split needs --total (all steps)" >&2; exit 2; }
 [[ -z "$TIME" || "$TIME" =~ ^[0-9]+:[0-9]{2}:[0-9]{2}$ ]] || { echo "--time must look like hh:mm:ss (got '$TIME')" >&2; exit 2; }
+# The model's training state (about 80 GB) needs 160 GB of GPU memory with
+# room for the rollouts: two 80 GB GPUs or four 40 GB ones (ISSUES.md #35).
+GPU_NODE="${GPU_NODE:-half}"
+case "$GPU_NODE" in
+  half) export N_GPUS="${N_GPUS:-2}" ;;
+  full) export N_GPUS="${N_GPUS:-4}" ;;
+  *) echo "GPU_NODE must be half or full (got '$GPU_NODE')" >&2; exit 2 ;;
+esac
 settings="$(bash "$HERE/run.sh" "$PRESET" ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} --dry-run)"   # reject bad flags now, not in the queue
 # What tvverify's job needs to know: is it on, and which cache does a single-mode run use
 VERIFY_ON=0; [[ "$settings" == *"tvverify on"* ]] && VERIFY_ON=1
@@ -54,9 +68,13 @@ SLURM_LOGS="${SLURM_LOGS:-$SCRATCH/tvcache/runs/slurm}"
 BASE="${BASE:-$SCRATCH/tvcache/runs/$(date +%Y%m%d-%H%M%S)-$PRESET-het}"
 mkdir -p "$SLURM_LOGS"
 SCRIPT="$HERE/hetjob.sbatch"
-if [[ -n "$TIME" ]]; then
-  SCRIPT="$SLURM_LOGS/hetjob-${TIME//:/}.sbatch"
-  sed "s/-t 05:00:00/-t $TIME/" "$HERE/hetjob.sbatch" > "$SCRIPT"
+edits=()
+[[ -z "$TIME" ]] || edits+=(-e "s/-t 05:00:00/-t $TIME/")
+# A whole 40 GB node for the GPU component, in place of its two #SBATCH lines.
+[[ "$GPU_NODE" != full ]] || edits+=(-e 's/^\(#SBATCH -A .*\) -q shared /\1 -q regular /' -e 's/^#SBATCH -C gpu&hbm80g .*$/#SBATCH -C gpu -N 1 -G 4/')
+if (( ${#edits[@]} )); then
+  SCRIPT="$SLURM_LOGS/hetjob-$GPU_NODE${TIME:+-${TIME//:/}}.sbatch"
+  sed "${edits[@]}" "$HERE/hetjob.sbatch" > "$SCRIPT"
 fi
 VERIFY_SCRIPT="$HERE/verify.sbatch"
 if [[ -n "$VERIFY_TIME" ]]; then
@@ -88,7 +106,7 @@ submit_verify() {  # submit_verify <run dir base> <training job>: one tvverify j
 
 if [[ -z "$SPLIT" ]]; then
   job=$(submit "$BASE" "$TOTAL" "" "")
-  echo "job $job: $PRESET ${CACHES:+(caches: $CACHES) }RUN=$BASE"
+  echo "job $job: $PRESET ${CACHES:+(caches: $CACHES) }RUN=$BASE (GPUs: $N_GPUS, $GPU_NODE node)"
   submit_verify "$BASE" "$job"
   exit 0
 fi
