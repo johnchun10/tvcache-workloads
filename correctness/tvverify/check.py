@@ -87,7 +87,7 @@ async def _classify(
         if finding.code in INCONCLUSIVE_CODES:
             inconclusive.append(finding)
             continue
-        if not finding.path or replays < 2 or finding.criterion not in ("C1", "C2a", "C3"):
+        if not finding.path or replays < 2 or finding.criterion not in ("C1", "C2a", "C2m", "C3"):
             bugs.append(finding)
             continue
         path = list(finding.path)
@@ -108,18 +108,37 @@ async def _classify(
     return bugs, noise, inconclusive
 
 
+def merged_nodes(graph: GraphExport) -> Tuple[List[str], List[str], List[str]]:
+    """What graph contraction merged, as (merged calls, their nodes, those
+    nodes' children). A merged node is listed under its first call; each
+    other call it holds is an alias of that one (model/dump.py)."""
+    aliases = sorted(n for n, node in graph.nodes.items() if node.alias_of)
+    firsts = sorted({graph.nodes[n].alias_of for n in aliases})
+    children = sorted({child.node_id for first in firsts for child in graph.children(first).values()})
+    return aliases, firsts, children
+
+
 def select_nodes(graph: GraphExport, budget: Optional[int], seed: int) -> List[str]:
-    """The nodes to replay: all of them, or with a budget, the most-served half
-    (cache hits plus resumes from their snapshot) and a seeded random sample
-    of the rest."""
+    """The nodes to replay: all of them, or with a budget, merged nodes first
+    (up to half the budget: the merged calls, then the nodes holding them,
+    then their children), then the most-served half of what is left (cache
+    hits plus resumes from their snapshot) and a seeded random sample of the
+    rest. Without merged nodes the first step takes nothing."""
     nodes = [n for n in graph.nodes if n != graph.root_id]
     if budget is None or budget >= len(nodes):
         return nodes
-    by_use = sorted(nodes, key=lambda n: (-(graph.nodes[n].hits + graph.nodes[n].lpm_hits), n))
-    top = [n for n in by_use[: (budget + 1) // 2] if graph.nodes[n].hits + graph.nodes[n].lpm_hits > 0]
+    rng = random.Random(seed)
+    merged: List[str] = []
+    for tier in merged_nodes(graph):
+        room = (budget + 1) // 2 - len(merged)
+        merged += tier if len(tier) <= room else rng.sample(tier, max(room, 0))
+    left = budget - len(merged)
+    others = [n for n in nodes if n not in set(merged)]
+    by_use = sorted(others, key=lambda n: (-(graph.nodes[n].hits + graph.nodes[n].lpm_hits), n))
+    top = [n for n in by_use[: (left + 1) // 2] if graph.nodes[n].hits + graph.nodes[n].lpm_hits > 0]
     chosen = set(top)
-    rest = [n for n in nodes if n not in chosen]
-    return top + random.Random(seed).sample(rest, budget - len(top))
+    rest = [n for n in others if n not in chosen]
+    return merged + top + rng.sample(rest, left - len(top))
 
 
 async def _replay(
@@ -138,6 +157,20 @@ async def _replay(
     report = await validator.run(graph, nodes=nodes, quiescent=quiescent)
     bugs, noise, inconclusive = await _classify(adapter, engine, report.findings, replays)
     replayed = report.checked.get("nodes_replayed", 0)
+    # Whose state was compared with a replay and matched: a snapshot against
+    # its path (C2a), a merged call against its node's first call (C2m). A
+    # node with any finding (bug, noise or inconclusive) does not count.
+    flagged = {f.node_id for f in report.findings if f.node_id}
+    state_matched = validator.state_checked - flagged
+    aliases, firsts, children = merged_nodes(graph)
+    checked = set(nodes) if nodes is not None else set(graph.nodes) - {graph.root_id}
+    merged = {
+        "nodes": len(firsts),
+        "calls": len(aliases),
+        "calls_checked": len(checked & set(aliases)),
+        "calls_equivalent": len(state_matched & set(aliases)),
+        "nodes_and_children_replayed": len(checked & (set(firsts) | set(children))),
+    }
     print(f"replay {task_id}: {'PASS' if not bugs else f'FAIL ({len(bugs)} bugs)'}, {len(noise)} noise, "
           f"{len(inconclusive)} inconclusive, {replayed}/{len(graph.nodes) - 1} nodes replayed")
     for f in bugs[:10]:
@@ -150,6 +183,9 @@ async def _replay(
         "task": task_id,
         "nodes_total": len(graph.nodes) - 1,
         "nodes_replayed": replayed,
+        "state_checked": len(validator.state_checked),
+        "state_matched": len(state_matched),
+        "merged": merged,
         "snapshots_checked": check_snapshots,
         "executions": engine.stats.executions,
         "bugs": [asdict(f) for f in bugs],

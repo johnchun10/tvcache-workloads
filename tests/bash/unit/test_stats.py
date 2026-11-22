@@ -71,10 +71,10 @@ def make_run(tmp_path):
     ])
     (run / "logs").mkdir(parents=True)
     (run / "logs" / "memory.csv").write_text(
-        "time,cgroup_mem_gb,graphroot_gb,containers,images,sandboxes\n"
-        "2026-11-13T09:00:00,3.1,2.0,9,3,4\n"
-        "2026-11-13T09:01:00,3.7,2.5,12,4,6\n"
-        "2026-11-13T09:02:00,NA,NA,0,0,0\n"
+        "time,cgroup_mem_gb,graphroot_gb,containers,images,sandboxes,contraction_sandboxes,sandbox_mem_gb\n"
+        "2026-11-13T09:00:00,3.1,2.0,9,3,4,0,0.40\n"
+        "2026-11-13T09:01:00,3.7,2.5,12,4,6,2,0.75\n"
+        "2026-11-13T09:02:00,NA,NA,0,0,0,0,NA\n"
     )
     (run / "logs" / "manager.log").write_text("Snapshot snap_aa of term_1 took 1.2s, 5000 bytes\n")
     (run / "dumps").mkdir()
@@ -110,6 +110,12 @@ def test_rounds_and_memory(tmp_path):
         1, 1, 1, False, 9.0)
     live = metrics["live_summary"]
     assert (live["peak_sandboxes"], live["peak_containers"], live["peak_mem_gb"]) == (6, 12, 3.7)
+    # The total split into contraction's sandboxes and training's, and the sandboxes' own memory.
+    assert (live["peak_training_sandboxes"], live["peak_contraction_sandboxes"], live["peak_sandbox_mem_gb"]) == (4, 2, 0.75)
+    second = metrics["live_sandboxes"][1]
+    assert (second["sandboxes"], second["training_sandboxes"], second["contraction_sandboxes"]) == (6, 4, 2)
+    table = stats.live_table(metrics["live_sandboxes"])
+    assert "| 2026-11-13T09:01:00 | 6 | 4 | 2 | 0.750 | 3.700 | 2.500 |" in table
     assert metrics["fork_bank"]["takes"] == 1
 
 
@@ -173,3 +179,21 @@ def test_report_for_a_run_without_a_cache(tmp_path):
     # no control.jsonl: the two steps are split evenly over the two epochs
     assert "| 0 | 1 | 0.250 | 60.0 | 30.0 |" in report and "| 1 | 1 | 0.750 | 40.0 | 20.0 |" in report
     assert "None: the run had no cache" in report and "Not available: tvverify did not run" in report
+
+
+def test_live_sandboxes_from_a_run_without_the_split_columns(tmp_path):
+    """A memory.csv written before the split and the sandbox memory existed
+    still gives the totals; the new fields are empty, not zero."""
+    run = make_run(tmp_path)
+    (run / "logs" / "memory.csv").write_text(
+        "time,cgroup_mem_gb,graphroot_gb,containers,images,sandboxes\n"
+        "2026-11-13T09:00:00,3.1,2.0,9,3,4\n"
+    )
+    metrics = stats.run_metrics(run)
+    (sample,) = metrics["live_sandboxes"]
+    assert (sample["sandboxes"], sample["training_sandboxes"], sample["contraction_sandboxes"], sample["sandbox_mem_gb"]) == (
+        4, None, None, None)
+    assert metrics["live_summary"]["peak_sandbox_mem_gb"] is None
+    # A long run's table is thinned to about 24 rows; every sample stays in metrics.json.
+    many = [dict(sample, time=f"t{i}") for i in range(100)]
+    assert len(stats.live_table(many)) == 5 + 20 + 1

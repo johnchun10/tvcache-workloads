@@ -179,8 +179,11 @@ trap cleanup EXIT
 
 # 0. memory logs, once a minute.
 #    memory.csv: this job's cgroup memory (includes the /tmp RAM disk), the
-#    size of podman's image store, how many containers and images exist, and
-#    how many sandboxes (compose projects: a Terminal-Bench sandbox is one).
+#    size of podman's image store, how many containers and images exist, how
+#    many sandboxes (compose projects: a Terminal-Bench sandbox is one), how
+#    many of those are contraction's (the coordinator's last `live` event; the
+#    rest are training's: rollouts and the fork bank), and the memory of the
+#    sandboxes' processes (sandbox_memory.py).
 #    containers.csv: memory per running container, where podman can report it
 #    (podman-hpc gives every container the same value; ISSUES.md #25).
 #    The client role has no containers; its memory goes to memory-client.csv.
@@ -191,12 +194,14 @@ if [[ "$ROLE" == client ]]; then
   ) > "$RUN/logs/memory-client.csv" 2>/dev/null & PIDS+=($!)
 else
   GRAPHROOT="$($CONTAINER_CLI info --format '{{.Store.GraphRoot}}' 2>/dev/null || echo /tmp)"
-  (set +eu; echo "time,cgroup_mem_gb,graphroot_gb,containers,images,sandboxes"
+  (set +eu; echo "time,cgroup_mem_gb,graphroot_gb,containers,images,sandboxes,contraction_sandboxes,sandbox_mem_gb"
    while true; do
      mem=$(awk '{printf "%.1f", $1/2^30}' "$CGROUP_MEM" 2>/dev/null || echo NA)
      root=$(du -s --block-size=1G "$GRAPHROOT" 2>/dev/null | cut -f1)
      sandboxes=$($CONTAINER_CLI ps --format '{{index .Labels "com.docker.compose.project"}}' 2>/dev/null | sort -u | grep -c .)
-     echo "$(date +%FT%T),$mem,${root:-NA},$($CONTAINER_CLI ps -q 2>/dev/null | wc -l),$($CONTAINER_CLI images -q 2>/dev/null | wc -l),$sandboxes"
+     contracting=$(grep '"event": "live"' "$RUN/contraction/events.jsonl" 2>/dev/null | tail -n 1 | sed -n 's/.*"sandboxes": \([0-9]*\).*/\1/p')
+     sandbox_mem=$("$VERL_PY" "$HERE/sandbox_memory.py" 2>/dev/null || echo NA)
+     echo "$(date +%FT%T),$mem,${root:-NA},$($CONTAINER_CLI ps -q 2>/dev/null | wc -l),$($CONTAINER_CLI images -q 2>/dev/null | wc -l),$sandboxes,${contracting:-0},${sandbox_mem:-NA}"
      sleep 60
    done) > "$RUN/logs/memory.csv" 2>/dev/null & PIDS+=($!)
   (set +eu; echo "time,container,mem_usage"

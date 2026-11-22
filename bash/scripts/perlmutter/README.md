@@ -171,6 +171,9 @@ It is written when training ends, and again by the tvverify job. To rebuild it:
 - **noise:** two fresh replays already disagree with each other, for example
   timestamps or random keys.
 - **inconclusive:** the replay couldn't run.
+- **merged calls:** commands that contraction merged into one node. tvverify
+  replays them first and checks that each leaves the state the node's first
+  command leaves.
 
 ## Other files in a run
 
@@ -178,7 +181,7 @@ It is written when training ends, and again by the tvverify job. To rebuild it:
 |---|---|
 | `logs/run.txt`, `server.out`, `client.out` | the run's log and each node's output; look here first if a run failed |
 | `config.env`, `metrics.json` | every setting used; the report's numbers as data |
-| `logs/memory.csv` | memory, image store size and containers, once a minute |
+| `logs/memory.csv` | once a minute: the job's memory, image store size, containers, live sandboxes (and how many are contraction's), and the memory of the sandboxes' processes |
 | `contraction/events.jsonl` | every contraction pause, merge and round |
 | `dumps/`, `check/` | cache dumps; tvverify's results |
 | `snapshots/` | the run's snapshots, saved for tvverify: `images.tar`, `snapshots.json`, `task_dirs/` |

@@ -305,6 +305,25 @@ def summarize(events_path: Path, buckets: int = 20) -> dict:
     return {"seconds": round(span, 1), "totals": totals, "per_task": per_task, "over_time": timeline}
 
 
+def live_counter(events: EventLog) -> Callable[[dict], None]:
+    """A sandbox event handler that writes a `live` event, with the number of
+    sandboxes contraction has running, each time that number changes. With
+    the node's total (logs/memory.csv) this splits the live sandboxes into
+    contraction's and training's."""
+    live: set = set()
+
+    def on_event(event: dict) -> None:
+        before = len(live)
+        if event["op"] in ("start", "restore"):
+            live.add(event["env_id"])
+        elif event["op"] == "stop":
+            live.discard(event["env_id"])  # deleting a snapshot is a stop too, of an id that was never live
+        if len(live) != before:
+            events.write("live", sandboxes=len(live))
+
+    return on_event
+
+
 async def serve(args: argparse.Namespace) -> None:
     from tvclient import Contractor
 
@@ -312,7 +331,7 @@ async def serve(args: argparse.Namespace) -> None:
     events = EventLog(args.events)
     instrument(events)
     sandbox = TerminalBenchSandbox.with_config(
-        SandboxConfig(manager_url=args.manager_url, snapshot_mode=args.snapshot_mode)
+        SandboxConfig(manager_url=args.manager_url, snapshot_mode=args.snapshot_mode, on_event=live_counter(events))
     )
     extra = {}
     if "on_summary" in inspect.signature(Contractor).parameters:  # newer tvclient
