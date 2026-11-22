@@ -509,7 +509,7 @@ def test_submit_hetjob_asks_for_half_an_80gb_node_or_a_whole_node(tmp_path):
 
     result, gpus, gpu_lines = submit()
     assert gpus == "2" and "(GPUs: 2, half node)" in result.stdout
-    assert gpu_lines == ["#SBATCH -A m4999 -q shared -t 05:00:00", "#SBATCH -C gpu&hbm80g -n 1 -c 64 --gpus-per-task=2"]
+    assert gpu_lines == ["#SBATCH -A m4999 -q shared -t 05:00:00", "#SBATCH -C gpu&hbm80g -n 1 -c 64 --gpus=2"]
 
     result, gpus, gpu_lines = submit("--time", "01:00:00", GPU_NODE="full")
     assert gpus == "4" and "(GPUs: 4, full node)" in result.stdout

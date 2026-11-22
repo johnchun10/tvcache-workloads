@@ -4,7 +4,9 @@
 # the fork bank, contraction coordinator), component 1 the GPUs (veRL): half
 # of a node with 80 GB GPUs, in the shared QOS, which is charged as half a
 # node. GPU_NODE=full at submit_hetjob.sh asks for a whole 40 GB node instead
-# (it rewrites the two #SBATCH lines after "hetjob" below).
+# (it rewrites the two #SBATCH lines after "hetjob" below). The GPUs are asked
+# for with --gpus, not --gpus-per-task: the shared queue counted the latter as
+# one GPU and refused 64 cores for it.
 # Slurm starts both together. Submit it with submit_hetjob.sh, which sets
 # HERE, RUN, PRESET and the run.sh flags ($RUN/run_args), and queues tvverify
 # as a job of its own for afterwards (verify.sbatch).
@@ -17,7 +19,7 @@
 #SBATCH -C cpu -N 1
 #SBATCH hetjob
 #SBATCH -A m4999 -q shared -t 05:00:00
-#SBATCH -C gpu&hbm80g -n 1 -c 64 --gpus-per-task=2
+#SBATCH -C gpu&hbm80g -n 1 -c 64 --gpus=2
 set -uo pipefail
 HERE="${HERE:?submit with submit_hetjob.sh (sets HERE)}"
 RUN_BASE="${RUN:?submit with submit_hetjob.sh (sets RUN)}"
