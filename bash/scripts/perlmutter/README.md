@@ -8,8 +8,8 @@ one file, `<run>/report.md`.
 A run is two Slurm jobs, both queued by one command:
 
 1. **Training**, on two nodes: a **CPU node** for the containers, snapshots,
-   cache server, container manager, fork bank and contraction, and **half of
-   a GPU node** (two 80 GB GPUs, charged as half a node) for veRL. It ends
+   cache server, container manager, fork bank and contraction, and **a GPU
+   node** (four 40 GB GPUs) for veRL. It ends
    when training does, after saving the run's snapshots to `<run>/snapshots`.
 2. **tvverify**, on one CPU node, starting when the training job ends. It
    loads the saved snapshots and adds its findings to `report.md`.
@@ -72,8 +72,8 @@ queued job.
 | `--prebuild`, `--dry-run` | build the task images and exit / print the settings and exit |
 
 The model is Qwen3.5-4B, with thinking off and sampled at temperature 1.0.
-Rarely changed settings come from the environment: `GPU_NODE` (`half`: two
-80 GB GPUs in the shared QOS; `full`: a whole node with four 40 GB GPUs. The
+Rarely changed settings come from the environment: `GPU_NODE` (`full`, the default: a whole node with four 40 GB GPUs; `half`: two
+80 GB GPUs in the shared QOS, charged as half a node but slow to queue. The
 model needs about 160 GB of GPU memory either way), `MODEL`, `THINKING` (0), `TEMPERATURE` (1.0),
 `MAX_TURNS` (30), `COMMAND_TIMEOUT` (30 s; a command still running then is
 treated as hung and ends its rollout as failed), `SEED` (42), `FORK_BANK` (1; 0 turns prewarming off), `CHECK_NODES`

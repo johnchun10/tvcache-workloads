@@ -22,9 +22,10 @@
 # Every other flag is a run.sh flag (--threshold, --epochs, --top-k, ...).
 #
 # From the environment:
-#   GPU_NODE=half|full  half (default): 2 GPUs of a node with 80 GB GPUs, in the
-#                       shared QOS, charged as half a node. full: a whole node
-#                       with four 40 GB GPUs, as before.
+#   GPU_NODE=full|half  full (default): a whole node with four 40 GB GPUs.
+#                       half: 2 GPUs of a node with 80 GB GPUs, in the shared
+#                       QOS, charged as half a node; there are few such nodes,
+#                       so the job can wait in the queue much longer.
 #
 # The account and QOS are the #SBATCH -A/-q lines in hetjob.sbatch (one pair
 # per node; sbatch options on the command line would reach only the first).
@@ -49,7 +50,7 @@ done
 [[ -z "$TIME" || "$TIME" =~ ^[0-9]+:[0-9]{2}:[0-9]{2}$ ]] || { echo "--time must look like hh:mm:ss (got '$TIME')" >&2; exit 2; }
 # The model's training state (about 80 GB) needs 160 GB of GPU memory with
 # room for the rollouts: two 80 GB GPUs or four 40 GB ones (ISSUES.md #35).
-GPU_NODE="${GPU_NODE:-half}"
+GPU_NODE="${GPU_NODE:-full}"
 case "$GPU_NODE" in
   half) export N_GPUS="${N_GPUS:-2}" ;;
   full) export N_GPUS="${N_GPUS:-4}" ;;
