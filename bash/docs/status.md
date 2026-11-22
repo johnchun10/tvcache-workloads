@@ -8,7 +8,7 @@ open. How to run is in `bash/scripts/perlmutter/README.md`. The testing plan its
 
 Off Perlmutter, with `main` of our four forks:
 
-- 214 unit and tvverify tests, and the 31 Rust tests of `tvcache-rust`.
+- 215 unit and tvverify tests, and the 31 Rust tests of `tvcache-rust`.
 - `bootstrap.sh` clones `main` of the four repos and moves a clone on an older branch
   over to `main`.
 - `submit_hetjob.sh` against a stand-in scheduler.

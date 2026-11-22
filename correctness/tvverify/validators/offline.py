@@ -8,7 +8,8 @@ task's root (no cache, no snapshots) and checks what the cache claims:
        fails the test the same way the replayed state does
   C2a  the node's snapshot holds the state the replay reaches
   C2m  a call that graph contraction merged into a node leaves the state the
-       node's first call leaves (each replayed after the same parent)
+       node's first call leaves (each replayed after the same parent); only
+       where the node has no snapshot, since C2a covers it otherwise
   A2   (opt-in) a call the adapter calls stateless did not change the state
 
 The structural checks (C4) run first; they need no sandboxes.
@@ -77,7 +78,10 @@ class OfflineValidator:
             if before and after and not diff_digests(before, after).equal_strict:
                 out.append(Finding("A2", "stateless_call_mutated_state", f"{key[:40]} changed the state", node_id, tuple(path)))
 
-        if node.alias_of and stateful:  # C2m: the merge itself, which needs no snapshot
+        has_snapshot = bool(self.check_snapshots and stateful and node.sandbox_id and (snapshot_exists is None or snapshot_exists(node.sandbox_id)))
+        # C2m: the merge itself. Skipped when the node has a snapshot to compare
+        # with: C2a below then checks this call's replay against the node's state.
+        if node.alias_of and stateful and not has_snapshot:
             self.state_checked.add(node_id)
             first = list(g.nodes[node.alias_of].path)
             mine, theirs = await self.engine.state_digest(path), await self.engine.state_digest(first)
@@ -89,7 +93,7 @@ class OfflineValidator:
             if not same:
                 out.append(Finding("C2m", "merged_state_differs", f"merged call leaves a different state than the node's first call {first[-1][:60]!r}{what}", node_id, tuple(path)))
 
-        if not (self.check_snapshots and stateful and node.sandbox_id and (snapshot_exists is None or snapshot_exists(node.sandbox_id))):
+        if not has_snapshot:
             return out
         self.state_checked.add(node_id)
         digest = await self.engine.state_digest(path)

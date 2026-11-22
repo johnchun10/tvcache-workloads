@@ -158,3 +158,39 @@ def test_merged_calls_are_checked_first_and_against_their_node(tmp_path):
     report = render([str(tmp_path / "result.json")])
     assert "| merged calls equivalent to their node / checked | 1 / 2 |" in report
     assert "| merged nodes in the tries (extra calls they hold) | 2 (2) |" in report
+
+
+def test_merged_call_with_a_snapshot_is_checked_against_the_snapshot_only(tmp_path, monkeypatch):
+    """Where the merged node holds a snapshot, the snapshot check (C2a) already
+    compares each merged call's replay with the node's state, so the two extra
+    replays of the merge check are not spent."""
+    async def snapshot_of(*calls):
+        sandbox = ToyFsSandbox(task_name="mg")
+        await sandbox.start()
+        for call in calls:
+            await sandbox.execute(call)
+        handle = await sandbox.fork()
+        await sandbox.stop()
+        return handle.get_id()
+
+    digests = []
+    real = ReplayEngine.state_digest
+
+    async def counting(self, keys):
+        digests.append(list(keys))
+        return await real(self, keys)
+
+    monkeypatch.setattr(ReplayEngine, "state_digest", counting)
+    with ToyFsSandbox.isolated():
+        dump = contracted_dump()
+        right, wrong = dump["mg"]["root"]["children"][:2]
+        right["sandbox_id"] = asyncio.run(snapshot_of(ToyCall("write", "a", "x")))
+        dump["mg"]["number_of_sandboxes"] = 1
+        (tmp_path / "dump.json").write_text(json.dumps(dump))
+        assert main_graph(graph_args(tmp_path, task=["mg"])) == 1  # the wrong merge is still found
+    task = json.loads((tmp_path / "result.json").read_text())["tasks"][0]
+    assert [(b["criterion"], b["code"]) for b in task["bugs"]] == [("C2m", "merged_state_differs")]
+    assert task["merged"]["calls_checked"] == 2 and task["merged"]["calls_equivalent"] == 1
+    append, write_a = ToyCall("append", "a", "x").serialize(), ToyCall("write", "a", "x").serialize()
+    # The right merge: one digest for each of its two calls (C2a), none for the pair.
+    assert digests.count([append]) == 1 and digests.count([write_a]) == 1
