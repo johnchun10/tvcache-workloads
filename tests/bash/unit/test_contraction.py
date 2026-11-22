@@ -520,3 +520,49 @@ def test_submit_hetjob_asks_for_half_an_80gb_node_or_a_whole_node(tmp_path):
     # The step's size follows the GPU count: a quarter of the node's threads per GPU.
     job = (SCRIPTS / "hetjob.sbatch").read_text()
     assert 'gpu_step=(-n 1 -c $(( 32 * GPUS )) --gpus="$GPUS" --cpu-bind=none)' in job and 'srun --het-group=1 "${gpu_step[@]}"' in job
+
+
+def test_coordinator_logs_how_many_sandboxes_contraction_has_running(tmp_path):
+    """The split of live sandboxes into contraction's and training's comes
+    from here: a `live` event each time the coordinator's count changes."""
+    from tvcache_workloads.bash.contraction import EventLog, live_counter
+
+    path = tmp_path / "events.jsonl"
+    on_event = live_counter(EventLog(path))
+    on_event({"op": "start", "seconds": 1.0, "env_id": "term_a"})
+    on_event({"op": "restore", "seconds": 1.0, "handle": "tb-snap:snap_1", "env_id": "term_b", "mode": "cold"})
+    on_event({"op": "execute", "seconds": 0.1})                       # not a change
+    on_event({"op": "stop", "seconds": 0.5, "env_id": "tb-snap:snap_1"})  # deleting a snapshot: nothing live ended
+    on_event({"op": "stop", "seconds": 0.5, "env_id": "term_a"})
+    on_event({"op": "stop", "seconds": 0.5, "env_id": "term_b"})
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [(r["event"], r["sandboxes"]) for r in records] == [("live", 1), ("live", 2), ("live", 1), ("live", 0)]
+    # train_pilot.sh reads the last one with grep and sed, so the spelling matters.
+    assert '"event": "live"' in path.read_text() and '"sandboxes": 0' in path.read_text().splitlines()[-1]
+
+
+def test_sandbox_memory_adds_up_processes_in_other_pid_namespaces(tmp_path):
+    """sandbox_memory.py: containers have their own PID namespaces, so the
+    sandboxes' memory is the PSS of every process outside this one's."""
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import sandbox_memory
+    finally:
+        sys.path.remove(str(SCRIPTS))
+
+    def process(pid, namespace, pss_kb=None):
+        folder = tmp_path / str(pid) / "ns"
+        folder.mkdir(parents=True)
+        os.symlink(f"pid:[{namespace}]", folder / "pid")
+        if pss_kb is not None:
+            (tmp_path / str(pid) / "smaps_rollup").write_text(f"Rss:  {pss_kb * 2} kB\nPss:  {pss_kb} kB\nPss_Anon: 1 kB\n")
+
+    process("self", 4026531836)
+    process(1, 4026531836, 9000)        # this node's own processes: not counted
+    process(200, 4026532500, 1500)      # a container
+    process(201, 4026532500, 500)
+    process(300, 4026532777, 3000)      # another container
+    process(301, 4026532777)            # ended before it could be read
+    (tmp_path / "meminfo").write_text("MemTotal: 1 kB\n")
+    assert sandbox_memory.sandbox_pss_kb(tmp_path) == 5000
+    assert sandbox_memory.sandbox_pss_kb(tmp_path / "missing") == 0

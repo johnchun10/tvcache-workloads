@@ -21,6 +21,10 @@ def render(paths: List[str]) -> str:
             by_criterion[f"{f['criterion']}/{f['code']}"] += 1
         totals["nodes_total"] += t.get("nodes_total", 0)
         totals["nodes_replayed"] += t.get("nodes_replayed", 0)
+        totals["state_checked"] += t.get("state_checked", 0)
+        totals["state_matched"] += t.get("state_matched", 0)
+        for name, value in (t.get("merged") or {}).items():
+            totals[f"merged_{name}"] += value
         totals["cache_mismatches"] += len(t.get("cache_mismatches", []))
         totals["snapshot_delete_failures"] += t.get("snapshot_delete_failures", 0)
 
@@ -33,6 +37,10 @@ def render(paths: List[str]) -> str:
         "| | count |",
         "|---|---|",
         f"| nodes replayed / in the tries | {totals['nodes_replayed']} / {totals['nodes_total']} |",
+        f"| nodes whose state matched its replay / checked for it | {totals['state_matched']} / {totals['state_checked']} |",
+        f"| merged nodes in the tries (extra calls they hold) | {totals['merged_nodes']} ({totals['merged_calls']}) |",
+        f"| merged calls equivalent to their node / checked | {totals['merged_calls_equivalent']} / {totals['merged_calls_checked']} |",
+        f"| merged nodes and their children replayed | {totals['merged_nodes_and_children_replayed']} |",
         f"| bugs | {totals['bugs']} |",
         f"| noise (nondeterministic tools) | {totals['noise']} |",
         f"| inconclusive (replay could not run) | {totals['inconclusive']} |",

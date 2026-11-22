@@ -7,6 +7,8 @@ task's root (no cache, no snapshots) and checks what the cache claims:
   C3   the same for the task's test call; and a node's snapshot passes or
        fails the test the same way the replayed state does
   C2a  the node's snapshot holds the state the replay reaches
+  C2m  a call that graph contraction merged into a node leaves the state the
+       node's first call leaves (each replayed after the same parent)
   A2   (opt-in) a call the adapter calls stateless did not change the state
 
 The structural checks (C4) run first; they need no sandboxes.
@@ -43,6 +45,9 @@ class OfflineValidator:
         self.check_purity = check_purity
         # False when the snapshots are gone (e.g. a dump saved after the run)
         self.check_snapshots = check_snapshots
+        # Nodes whose state was compared with a replay (C2a or C2m), whatever
+        # the outcome: check.py counts the ones that matched.
+        self.state_checked: set = set()
 
     async def check_node(
         self,
@@ -72,8 +77,21 @@ class OfflineValidator:
             if before and after and not diff_digests(before, after).equal_strict:
                 out.append(Finding("A2", "stateless_call_mutated_state", f"{key[:40]} changed the state", node_id, tuple(path)))
 
+        if node.alias_of and stateful:  # C2m: the merge itself, which needs no snapshot
+            self.state_checked.add(node_id)
+            first = list(g.nodes[node.alias_of].path)
+            mine, theirs = await self.engine.state_digest(path), await self.engine.state_digest(first)
+            if mine is None or theirs is None:  # a sandbox without state_digest() is compared live
+                same, what = await self.engine.same_state(path, first), ""
+            else:
+                diff = diff_digests(mine, theirs)
+                same, what = diff.equal_strict, f": {diff.reason or {c: e[:2] for c, e in diff.differing.items()}}"
+            if not same:
+                out.append(Finding("C2m", "merged_state_differs", f"merged call leaves a different state than the node's first call {first[-1][:60]!r}{what}", node_id, tuple(path)))
+
         if not (self.check_snapshots and stateful and node.sandbox_id and (snapshot_exists is None or snapshot_exists(node.sandbox_id))):
             return out
+        self.state_checked.add(node_id)
         digest = await self.engine.state_digest(path)
         if digest is None:  # a sandbox without state_digest() is compared live through equals()
             if not await self.engine.matches_snapshot(path, node.sandbox_id):

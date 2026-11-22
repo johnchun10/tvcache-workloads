@@ -303,17 +303,24 @@ def run_metrics(run: Path) -> dict:
 
     round_rows = contraction_rounds(run, control)
 
-    # Live sandboxes and memory over time, on the node running the containers.
-    # (podman stats' per-container memory is one shared value on podman-hpc,
-    # so the job's cgroup memory is the number to use.)
+    # Live sandboxes and memory over time, on the node running the containers:
+    # how many, how many of them are contraction's (the rest are training's:
+    # rollouts and the fork bank), and the memory of their processes.
+    # (podman stats' per-container memory is one shared value on podman-hpc;
+    # mem_gb is the job's cgroup, which also holds the image store and the
+    # servers. A run from before these columns existed has None for them.)
     live = []
     memory_csv = run / "logs" / "memory.csv"
     if memory_csv.exists():
         for row in csv.DictReader(memory_csv.open()):
+            sandboxes, contracting = _int(row.get("sandboxes")), _int(row.get("contraction_sandboxes"))
             live.append({
                 "time": row.get("time"),
-                "sandboxes": _int(row.get("sandboxes")),
+                "sandboxes": sandboxes,
+                "contraction_sandboxes": contracting,
+                "training_sandboxes": None if sandboxes is None or contracting is None else max(sandboxes - contracting, 0),
                 "containers": _int(row.get("containers")),
+                "sandbox_mem_gb": _float(row.get("sandbox_mem_gb")),
                 "mem_gb": _float(row.get("cgroup_mem_gb")),
                 "image_store_gb": _float(row.get("graphroot_gb")),
             })
@@ -331,6 +338,9 @@ def run_metrics(run: Path) -> dict:
         "live_sandboxes": live,
         "live_summary": {
             "peak_sandboxes": _peak(live, "sandboxes"),
+            "peak_training_sandboxes": _peak(live, "training_sandboxes"),
+            "peak_contraction_sandboxes": _peak(live, "contraction_sandboxes"),
+            "peak_sandbox_mem_gb": _peak(live, "sandbox_mem_gb"),
             "peak_containers": _peak(live, "containers"),
             "peak_mem_gb": _peak(live, "mem_gb"),
             "peak_image_store_gb": _peak(live, "image_store_gb"),
@@ -357,6 +367,21 @@ def _float(text) -> Optional[float]:
         return float(text)
     except (TypeError, ValueError):
         return None
+
+
+def live_table(samples: List[dict], rows: int = 24) -> List[str]:
+    """The live sandboxes over time, thinned to about `rows` evenly spaced
+    samples (every sample is in metrics.json and logs/memory.csv)."""
+    if not samples:
+        return []
+    step = max(1, -(-len(samples) // rows))
+    cols = ["time", "sandboxes", "training_sandboxes", "contraction_sandboxes", "sandbox_mem_gb", "mem_gb", "image_store_gb"]
+    out = ["Over time (training's sandboxes are rollouts and the fork bank; sandbox_mem_gb is the memory of the",
+           "sandboxes' processes, mem_gb the whole job's on this node):", "",
+           "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+    for sample in samples[::step]:
+        out.append("| " + " | ".join(fmt(sample.get(c)) for c in cols) + " |")
+    return out + [""]
 
 
 def _peak(samples: List[dict], key: str):
@@ -459,6 +484,7 @@ def to_markdown(metrics: dict) -> str:
         for r in metrics["rounds"]:
             out.append("| " + " | ".join(fmt(r[c]) for c in rcols) + " |")
     out += ["", "## Live sandboxes", "", f"{metrics['live_summary']}", ""]
+    out += live_table(metrics["live_sandboxes"])
     out += ["Fork bank: " + json.dumps(metrics["fork_bank"]), ""]
 
     out += ["## Correctness (tvverify)", ""]

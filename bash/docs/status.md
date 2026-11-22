@@ -8,7 +8,7 @@ open. How to run is in `bash/scripts/perlmutter/README.md`. The testing plan its
 
 Off Perlmutter, with `main` of our four forks:
 
-- 178 unit and tvverify tests, and the 31 Rust tests of `tvcache-rust`.
+- 214 unit and tvverify tests, and the 31 Rust tests of `tvcache-rust`.
 - `bootstrap.sh` clones `main` of the four repos and moves a clone on an older branch
   over to `main`.
 - `submit_hetjob.sh` against a stand-in scheduler.
@@ -62,10 +62,14 @@ All of these are in the run's `report.md` (and `metrics.json`) unless marked.
 | [M] Comparisons that found equivalence | Covered |
 | Rollouts hitting max length | Covered (`length_truncated`, `turn_capped`) |
 | The ratio table | Covered (`compare_runs.py`, or `stats.py --compare`) |
-| [M] Sandboxes compared per round | **Partial**: comparisons are counted, not distinct sandboxes |
-| [M] Merged nodes equivalent to replay | **Partial**: tvverify replays merged calls, but samples nodes by hit count, not merged nodes first, and the report has no count of them |
-| Live sandboxes over time, training vs contraction | **Partial**: total only, no split |
-| Memory of live sandboxes over time | **Partial**: the job's total; podman-hpc reports one shared value per container (ISSUES.md #25) |
+| [M] Sandboxes compared per round | Covered by two columns: `comparisons` (comparisons made) and `nodes_built` (distinct sandboxes brought up to be compared; one built just as a round was cut off counts though it was never compared) |
+| [M] Merged nodes equivalent to replay | Covered: tvverify replays merged calls first (up to half its node budget, then the nodes holding them and their children) and checks each against its node's first call (C2m); the tvverify section counts merged nodes, merged calls checked and found equivalent, and nodes whose state matched its replay |
+| Live sandboxes over time, training vs contraction | Covered: `logs/memory.csv` has the total and contraction's own count once a minute (training's is the rest: rollouts and the fork bank); the report has the peaks and a table over time |
+| Memory of live sandboxes over time | Covered: `sandbox_mem_gb`, the memory of the sandboxes' processes (`sandbox_memory.py`; `podman stats` cannot give it, ISSUES.md #25). Files a sandbox writes are in the image store (`image_store_gb`), not in this number |
+
+The last three are new and have not run on Perlmutter. They were checked on a laptop: the
+merged-node selection on the first contraction run's dump (54 merged nodes), the memory
+measure on real Docker containers of known size.
 
 The cache metrics need two things on, and `logs/run.txt` says so when one is off: the
 trace (off with `--no-verify`; then no hit rates or call times) and the fork bank (off
@@ -74,9 +78,8 @@ with `FORK_BANK=0`; then no split by epoch, graph sizes or idle windows).
 ## Open tasks, in order
 
 1. **Shakedown on Perlmutter.** Nothing below is worth doing before it.
-2. **The four partial metrics above.** Distinct sandboxes compared and the training vs
-   contraction split need counters in tvclient; the merged-first check is a sampling
-   change in tvverify; per-sandbox memory needs something other than `podman stats`.
+2. **Confirm the three new metrics in a real run** (merged-node check, live sandbox
+   split, sandbox memory): see the table above.
 3. **Fork bank counts fake hits.** tvclient's `ForkBank` looks up each hot snapshot with
    `find`, which counts a cache hit on that node; `lease_sandbox` exists for this and
    counts nothing. Change `fork_bank.py` in tvclient. The report is not affected (it
