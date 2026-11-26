@@ -184,7 +184,7 @@ It is written when training ends, and again by the tvverify job. To rebuild it:
 | `logs/memory.csv` | once a minute: the job's memory, image store size, containers, live sandboxes (and how many are contraction's), and the memory of the sandboxes' processes |
 | `contraction/events.jsonl` | every contraction pause, merge and round |
 | `dumps/`, `check/` | cache dumps; tvverify's results |
-| `snapshots/` | the run's snapshots, saved for tvverify: `images.tar`, `snapshots.json`, `task_dirs/` |
+| `snapshots/` | the run's snapshots, saved for tvverify: `images-NNN.tar` (100 images each; podman cannot load one archive of a whole run's), `snapshots.json`, `task_dirs/` |
 | `verify.out`, `logs/verify-*.log` | the tvverify job's output |
 
 **Several runs side by side:**

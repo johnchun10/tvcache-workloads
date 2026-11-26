@@ -273,7 +273,7 @@ def test_saved_snapshot_restores_after_its_images_are_deleted(run, tmp_path):
 
         saved = await client.save_snapshots(str(saved_dir))
         assert saved["snapshots"] >= 1 and saved["images"] >= 1
-        assert (saved_dir / "images.tar").stat().st_size == saved["bytes"] > 0
+        assert sum(archive.stat().st_size for archive in saved_dir.glob("images-*.tar")) == saved["bytes"] > 0
 
         await handle.stop()  # /delete_snapshot
         await parent.stop()
